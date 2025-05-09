@@ -1,0 +1,127 @@
+package main
+
+import (
+	"log"
+	"net/http"
+	"time"
+
+	"devstreamlinebot/config"
+	"devstreamlinebot/consumers"
+	"devstreamlinebot/models"
+	"devstreamlinebot/polling"
+
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	"golang.org/x/time/rate"
+	"gorm.io/driver/sqlite" // Import SQLite driver
+	"gorm.io/gorm"
+)
+
+// RateLimitedTransport implements http.RoundTripper with rate limiting
+type RateLimitedTransport struct {
+	limiter     *rate.Limiter
+	underlying  http.RoundTripper
+	maxWaitTime time.Duration
+}
+
+// RoundTrip implements the http.RoundTripper interface with rate limiting
+func (t *RateLimitedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
+	if err := t.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+	return t.underlying.RoundTrip(req)
+}
+
+func main() {
+	// Load application configuration
+	cfg, err := config.LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	// Initialize database connection
+	db, err := gorm.Open(sqlite.Open(cfg.Database.DSN), &gorm.Config{}) // Use SQLite
+	if err != nil {
+		log.Fatalf("failed to connect to database: %v", err)
+	}
+
+	// Auto-migrate database schemas
+	if err := db.AutoMigrate(
+		&models.Repository{}, &models.User{}, &models.Label{}, &models.Milestone{}, &models.MergeRequest{},
+		&models.Chat{}, &models.VKUser{}, &models.VKMessage{}, &models.RepositorySubscription{}, &models.PossibleReviewer{},
+	); err != nil {
+		log.Fatalf("failed to migrate database schemas: %v", err)
+	}
+
+	// Initialize GitLab client with rate limiting
+	// Create a rate limiter that allows 5 requests per second with a burst of 10
+	limiter := rate.NewLimiter(rate.Limit(5), 10)
+
+	// Create custom HTTP client with rate limiting
+	httpClient := &http.Client{
+		Transport: &RateLimitedTransport{
+			limiter:     limiter,
+			underlying:  http.DefaultTransport,
+			maxWaitTime: 30 * time.Second,
+		},
+	}
+
+	// Initialize the GitLab client with rate limiting
+	glClient, err := gitlab.NewClient(cfg.Gitlab.Token,
+		gitlab.WithBaseURL(cfg.Gitlab.BaseURL),
+		gitlab.WithHTTPClient(httpClient))
+	if err != nil {
+		log.Fatalf("failed to create GitLab client: %v", err)
+	}
+
+	// Initial load of repositories the authenticated user has access to
+	opt := &gitlab.ListProjectsOptions{
+		Membership: gitlab.Ptr(true),
+		ListOptions: gitlab.ListOptions{
+			PerPage: 100,
+			Page:    1,
+		},
+	}
+	for {
+		projects, resp, err := glClient.Projects.ListProjects(opt)
+		if err != nil {
+			log.Fatalf("failed to list GitLab projects: %v", err)
+		}
+
+		for _, p := range projects {
+			repo := models.Repository{
+				GitlabID:    p.ID,
+				Name:        p.Name,
+				Description: p.Description,
+				WebURL:      p.WebURL,
+			}
+			db.FirstOrCreate(&repo, models.Repository{GitlabID: p.ID})
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+
+	// Start background polling
+	polling.StartRepositoryPolling(db, glClient, cfg.Gitlab.PollInterval)
+	polling.StartMergeRequestPolling(db, glClient, cfg.Gitlab.PollInterval)
+
+	// Start VK message polling and get bot instance and events channel
+	vkBot, vkEvents := polling.StartVKPolling(db, cfg.VK.BaseURL, cfg.VK.Token)
+
+	// Start GitLab user email polling (fetch missing emails)
+	polling.StartUserEmailPolling(db, glClient, cfg.Gitlab.PollInterval)
+
+	// Initialize and start VK command consumer
+	vkCommandConsumer := consumers.NewVKCommandConsumer(db, vkBot, glClient, vkEvents)
+	vkCommandConsumer.StartConsumer()
+
+	// Initialize and start MR reviewer assignment consumer
+	mrReviewerConsumer := consumers.NewMRReviewerConsumer(db, vkBot, glClient, cfg.Gitlab.PollInterval)
+	mrReviewerConsumer.StartConsumer()
+
+	// Block forever
+	select {}
+}
