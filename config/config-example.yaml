@@ -1,0 +1,9 @@
+gitlab:
+  base_url: ""
+  token: ""
+  poll_interval: "1m"
+vk:
+  base_url: ""
+  token: ""
+database:
+  dsn: "devstreamline.db"
