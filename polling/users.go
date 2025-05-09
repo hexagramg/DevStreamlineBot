@@ -17,7 +17,7 @@ func StartUserEmailPolling(db *gorm.DB, client *gitlab.Client, interval time.Dur
 		defer ticker.Stop()
 		for range ticker.C {
 			var users []models.User
-			if err := db.Where("email = ''").Find(&users).Error; err != nil {
+			if err := db.Where("email = '' AND email_fetched = false").Find(&users).Error; err != nil {
 				log.Printf("failed to query users without email: %v", err)
 				continue
 			}

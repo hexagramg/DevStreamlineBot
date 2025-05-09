@@ -3,7 +3,6 @@ package consumers
 import (
 	"fmt"
 	"log"
-	"math"
 	"math/rand"
 	"time"
 
@@ -20,7 +19,7 @@ type MRReviewerConsumer struct {
 	vkBot     *botgolang.Bot
 	glClient  *gitlab.Client
 	interval  time.Duration
-	startTime time.Time // New field to track when consumer started
+	startTime time.Time
 }
 
 // NewMRReviewerConsumer initializes a new MRReviewerConsumer.
@@ -30,7 +29,7 @@ func NewMRReviewerConsumer(db *gorm.DB, vkBot *botgolang.Bot, glClient *gitlab.C
 		vkBot:     vkBot,
 		glClient:  glClient,
 		interval:  interval,
-		startTime: time.Now().AddDate(0, 0, -1), // Initialize with current time minus one day
+		startTime: time.Now().AddDate(0, 0, -2),
 	}
 }
 
@@ -85,8 +84,8 @@ func (c *MRReviewerConsumer) assignReviewers() {
 		if err := c.db.Where("id IN ? AND id <> ?", ids, mr.AuthorID).Find(&users).Error; err != nil || len(users) == 0 {
 			continue
 		}
-		// select reviewer by normal distribution
-		idx := pickReviewer(len(users))
+		// select reviewer using uniform distribution with balancing
+		idx := c.pickReviewer(users)
 		reviewer := users[idx]
 
 		// assign reviewer in GitLab
@@ -150,18 +149,83 @@ func (c *MRReviewerConsumer) assignReviewers() {
 	}
 }
 
-// pickReviewer returns an index from [0,n) using a normal distribution centered at mid.
-func pickReviewer(n int) int {
-	mean := float64(n-1) / 2.0
-	sigma := float64(n) / 4.0
-	var idx int
-	// clamp generated index to valid range
-	for {
-		v := rand.NormFloat64()*sigma + mean
-		idx = int(math.Round(v))
-		if idx >= 0 && idx < n {
-			break
+// pickReviewer selects a reviewer using a uniform distribution with workload balancing
+// taking into account reviewer assignments from the past two weeks
+func (c *MRReviewerConsumer) pickReviewer(users []models.User) int {
+	if len(users) == 0 {
+		return 0
+	}
+
+	if len(users) == 1 {
+		return 0
+	}
+
+	twoWeeksAgo := time.Now().AddDate(0, 0, -14)
+	recentReviewCounts := make(map[uint]int)
+
+	userIDs := make([]uint, len(users))
+	for i, user := range users {
+		userIDs[i] = user.ID
+	}
+
+	// Query recent reviewer assignments from the database using the join table
+	var reviewerCounts []struct {
+		UserID uint
+		Count  int
+	}
+
+	dbQueryFailed := false
+	if err := c.db.Table("merge_request_reviewers").
+		Joins("JOIN merge_requests ON merge_requests.id = merge_request_reviewers.merge_request_id").
+		Where("merge_requests.gitlab_created_at > ?", twoWeeksAgo).
+		Where("merge_request_reviewers.user_id IN ?", userIDs).
+		Select("merge_request_reviewers.user_id, COUNT(*) as count").
+		Group("merge_request_reviewers.user_id").
+		Find(&reviewerCounts).Error; err != nil {
+		log.Printf("failed to fetch recent reviewer counts: %v", err)
+		dbQueryFailed = true
+	} else {
+		for _, count := range reviewerCounts {
+			recentReviewCounts[count.UserID] = count.Count
 		}
 	}
-	return idx
+
+	// If database query failed or returned no results, use uniform distribution
+	if dbQueryFailed || len(reviewerCounts) == 0 {
+		return rand.Intn(len(users))
+	}
+
+	// Calculate weights based on historical review counts
+	weights := make([]float64, len(users))
+	totalWeight := 0.0
+
+	for i, user := range users {
+		count := recentReviewCounts[user.ID]
+		weight := 1.0 / float64(count+1)
+		weights[i] = weight
+		totalWeight += weight
+	}
+
+	if totalWeight <= 0 {
+		// Fallback to uniform distribution if weights calculation failed
+		return rand.Intn(len(users))
+	}
+
+	// Normalize weights to form a probability distribution
+	for i := range weights {
+		weights[i] /= totalWeight
+	}
+
+	// Select reviewer based on weighted probability
+	r := rand.Float64()
+	cumulativeWeight := 0.0
+
+	for i, weight := range weights {
+		cumulativeWeight += weight
+		if r <= cumulativeWeight {
+			return i
+		}
+	}
+
+	return rand.Intn(len(users))
 }
