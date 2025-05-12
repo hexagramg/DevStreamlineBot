@@ -36,3 +36,6 @@ config.yaml
 *.db
 # Cache
 *.cache
+
+# Build
+devstreamlinebot

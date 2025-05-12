@@ -40,6 +40,14 @@ Execute the bot using:
 go run main.go
 ```
 
+Or build image:
+```bash
+docker build -t dsbot-builder .
+docker create --name tmp dsbot-builder >/dev/null
+docker cp tmp:/usr/local/bin/devstreamlinebot .
+docker rm tmp
+```
+
 ## Configuration
 
 The `config.json` file needs to contain your personal API tokens and service URLs. Make sure not to commit this file to version control.
