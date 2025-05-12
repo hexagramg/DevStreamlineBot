@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"devstreamlinebot/config"
@@ -33,6 +35,20 @@ func (t *RateLimitedTransport) RoundTrip(req *http.Request) (*http.Response, err
 }
 
 func main() {
+	// --- LOG SETUP ---
+	logsDir := "logs"
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		log.Fatalf("failed to create logs directory: %v", err)
+	}
+	logPath := filepath.Join(logsDir, "app.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Fatalf("failed to open log file %s: %v", logPath, err)
+	}
+	defer f.Close()
+	log.SetOutput(f)
+	// -----------------
+
 	// Load application configuration
 	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {
