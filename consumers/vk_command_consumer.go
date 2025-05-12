@@ -50,6 +50,8 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleUnsubscribeCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/reviewers") {
 		c.handleReviewersCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/reviews") {
+		c.handleReviewsCommand(msg, from)
 	}
 }
 
@@ -284,6 +286,66 @@ func (c *VKCommandConsumer) handleReviewersCommand(msg *botgolang.Message, _ bot
 		replyText += fmt.Sprintf(" Users not found: %s.", strings.Join(notFoundUsers, ", "))
 	}
 	c.sendReply(msg, replyText)
+}
+
+// handleReviewsCommand processes the /reviews command to list merge requests where a user is a reviewer.
+func (c *VKCommandConsumer) handleReviewsCommand(msg *botgolang.Message, from botgolang.Contact) {
+	parts := strings.Fields(msg.Text)
+	var username string
+	if len(parts) < 2 {
+		// No arg: resolve GitLab user from VK caller link
+		vkID := fmt.Sprint(from.ID)
+		var vkUser models.VKUser
+		if err := c.db.Where("user_id = ?", vkID).First(&vkUser).Error; err != nil {
+			c.sendReply(msg, "Cannot determine your account. Please specify a GitLab username: /reviews <username>")
+			return
+		}
+		// Find GitLab user by email matching VKUser.UserID
+		var user models.User
+		if err := c.db.Where("email = ?", vkUser.UserID).First(&user).Error; err != nil {
+			c.sendReply(msg, "No linked GitLab user found for your VK account. Please specify a username: /reviews <username>")
+			return
+		}
+		username = user.Username
+	} else {
+		username = strings.TrimSpace(parts[1])
+	}
+
+	// Find GitLab user by username
+	var user models.User
+	if err := c.db.Where("username = ?", username).First(&user).Error; err != nil {
+		c.sendReply(msg, fmt.Sprintf("User %s not found", username))
+		return
+	}
+
+	// Find open merge requests where this user is a reviewer and has not approved
+	var mrs []models.MergeRequest
+	if err := c.db.
+		Preload("Author").
+		Where("merge_requests.state = ? AND merge_requests.merged_at IS NULL", "opened").
+		Where("EXISTS (SELECT 1 FROM merge_request_reviewers mrr WHERE mrr.merge_request_id = merge_requests.id AND mrr.user_id = ?)", user.ID).
+		Where("NOT EXISTS (SELECT 1 FROM merge_request_approvers mra WHERE mra.merge_request_id = merge_requests.id AND mra.user_id = ?)", user.ID).
+		Find(&mrs).Error; err != nil {
+		log.Printf("failed to fetch merge requests for reviewer %s: %v", username, err)
+		c.sendReply(msg, "Failed to fetch reviews. Please try again later.")
+		return
+	}
+	if len(mrs) == 0 {
+		c.sendReply(msg, fmt.Sprintf("No pending reviews for user %s", username))
+		return
+	}
+
+	// Build digest message
+	text := fmt.Sprintf("REVIEWS FOR %s:\n", username)
+	for _, mr := range mrs {
+		text += fmt.Sprintf("- %s\n  %s\n  author: @[%s]\n", mr.Title, mr.WebURL, mr.Author.Username)
+	}
+
+	// Send reply
+	replyMsg := c.vkBot.NewTextMessage(fmt.Sprint(msg.Chat.ID), text)
+	if err := replyMsg.Send(); err != nil {
+		log.Printf("failed to send reviews digest: %v", err)
+	}
 }
 
 // sendReply sends a reply message to the given message.
