@@ -5,6 +5,9 @@ A bot designed to streamline development workflows by automating code review adm
 - `/subscribe 123` - Subscribe to GitLab project with ID 123
 - `/unsubscribe 123` - Unsubscribe from a project
 - `/reviewers a.afansyiev,b.ivanov` - Set team members as default reviewers
+- `/reviewers` - Clear reviewers for this chat
+- `/reviews` - Get reviews for you
+- `/reviews a.afanasyiev` - Get all reviews for a person with this username
 
 When a new merge request is created (not in draft status), the bot automatically notifies the chat and updates the merge request with reviewer information, helping teams manage their code review process more efficiently. 
 
