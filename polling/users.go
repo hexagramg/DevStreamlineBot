@@ -83,6 +83,19 @@ func StartUserEmailPolling(db *gorm.DB, client *gitlab.Client, interval time.Dur
 					log.Printf("updated user ID %d email to %s", userID, email)
 				}
 			}
+
+			// Reset email_fetched flag for users that were updated more than a day ago,
+			// have no email, username doesn't contain '-', and email_fetched is true
+			oneDayAgo := time.Now().Add(-24 * time.Hour)
+			result := db.Model(&models.User{}).
+				Where("email = '' AND email_fetched = true AND username NOT LIKE '%--%' AND updated_at < ?", oneDayAgo).
+				Updates(map[string]interface{}{"email_fetched": false})
+
+			if result.Error != nil {
+				log.Printf("failed to reset email_fetched flag: %v", result.Error)
+			} else if result.RowsAffected > 0 {
+				log.Printf("reset email_fetched flag for %d users that were updated more than a day ago and have no email", result.RowsAffected)
+			}
 		}
 	}()
 }
