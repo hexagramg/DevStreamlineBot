@@ -29,8 +29,10 @@ type User struct {
 	CreatedAt    *time.Time
 	AvatarURL    string
 	WebURL       string
-	Email        string
-	EmailFetched bool `gorm:"default:false"`
+	Email        string `gorm:"index"`
+	EmailFetched bool   `gorm:"default:false"`
+
+	UpdatedAt *time.Time
 
 	AuthoredMergeRequests []MergeRequest `gorm:"foreignKey:AuthorID"`
 	AssignedMergeRequests []MergeRequest `gorm:"foreignKey:AssigneeID"`
@@ -184,7 +186,7 @@ type Chat struct {
 // VKUser represents a VK Teams user.
 type VKUser struct {
 	gorm.Model
-	UserID    string `gorm:"uniqueIndex;not null"` // unique user identifier (email)
+	UserID    string `gorm:"uniqueIndex;not null;index"` // unique user identifier (email)
 	FirstName string
 	LastName  string
 	Nick      string

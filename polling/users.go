@@ -46,38 +46,41 @@ func StartUserEmailPolling(db *gorm.DB, client *gitlab.Client, interval time.Dur
 				if glUser.PublicEmail != "" && glUser.PublicEmail != u.Email {
 					u.Email = glUser.PublicEmail
 				}
-				if err := db.Model(&u).Updates(models.User{Email: u.Email, Locked: glUser.Locked, EmailFetched: true}).Error; err != nil {
+				now := time.Now()
+				if err := db.Model(&u).Updates(map[string]interface{}{"email": u.Email, "locked": glUser.Locked, "email_fetched": true, "updated_at": now}).Error; err != nil {
 					log.Printf("failed to update email for user %d: %v", u.GitlabID, err)
 				}
 			}
 
 			// Now process users with email_fetched = true but still have empty emails
-			// Try to match them with VK users - exclude users with empty usernames directly in the query
-			var emptyEmailUsers []models.User
-			if err := db.Where("email = '' AND email_fetched = true AND username <> ''").Find(&emptyEmailUsers).Error; err != nil {
-				log.Printf("failed to query users with empty emails (email_fetched = true): %v", err)
+			// Batch VKUser lookup
+			var mappings []struct {
+				UserID   uint
+				NewEmail string
+			}
+			if err := db.Table("users u").Select("u.id as user_id, vu.user_id as new_email").
+				Joins("JOIN vk_users vu on vu.user_id LIKE CONCAT(u.username, '@%')").
+				Where("u.email = '' AND u.email_fetched = true AND u.username <> ''").
+				Order("u.id, vu.id desc").
+				Scan(&mappings).Error; err != nil {
+				log.Printf("failed to batch join query VK users: %v", err)
 				continue
 			}
-
-			for _, user := range emptyEmailUsers {
-				// Only find VK users where UserID follows the pattern "username@..." ordered by ID in descending order
-				var vkUsers []models.VKUser
-				if err := db.Where("user_id LIKE ?", user.Username+"@%").Order("id DESC").Find(&vkUsers).Error; err != nil {
-					log.Printf("failed to query VK users for GitLab user %s: %v", user.Username, err)
-					continue
+			// Build map of userID to first matched newEmail
+			newMap := make(map[uint]string, len(mappings))
+			for _, m := range mappings {
+				if _, exists := newMap[m.UserID]; !exists {
+					newMap[m.UserID] = m.NewEmail
 				}
-
-				// If we find matching VK users
-				if len(vkUsers) > 0 {
-					// Use the first match (they all match the username@ pattern and now the first one has the highest ID)
-					vkUser := vkUsers[0]
-
-					// Update GitLab user with the VK user ID as email
-					if err := db.Model(&user).Update("email", vkUser.UserID).Error; err != nil {
-						log.Printf("failed to update email for user %s with VK user ID: %v", user.Username, err)
-					} else {
-						log.Printf("updated user %s email with VK user ID %s", user.Username, vkUser.UserID)
-					}
+			}
+			// Update users in batch (one update per user)
+			for userID, email := range newMap {
+				now := time.Now()
+				if err := db.Model(&models.User{}).Where("id = ?", userID).
+					Updates(map[string]interface{}{"email": email, "updated_at": &now}).Error; err != nil {
+					log.Printf("failed to update email for user ID %d: %v", userID, err)
+				} else {
+					log.Printf("updated user ID %d email to %s", userID, email)
 				}
 			}
 		}
