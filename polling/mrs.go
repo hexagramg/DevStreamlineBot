@@ -116,10 +116,28 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 	now := time.Now()
 	mrModel.LastUpdate = &now
 
-	// Upsert the merge request
-	if err := db.Where(models.MergeRequest{GitlabID: mrModel.GitlabID}).Assign(mrModel).FirstOrCreate(&mrModel).Error; err != nil {
-		log.Printf("Error upserting merge request GitlabID %d: %v", mrModel.GitlabID, err)
-		return 0, fmt.Errorf("upserting merge request GitlabID %d: %w", mrModel.GitlabID, err)
+	// Upsert the merge request: update if exists, create if not
+	var existingMR models.MergeRequest
+	err := db.Where(models.MergeRequest{GitlabID: mrModel.GitlabID}).First(&existingMR).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		log.Printf("Error checking for existing merge request GitlabID %d: %v", mrModel.GitlabID, err)
+		return 0, fmt.Errorf("checking for existing merge request GitlabID %d: %w", mrModel.GitlabID, err)
+	}
+	if err == gorm.ErrRecordNotFound {
+		// Not found, create new
+		if err := db.Create(&mrModel).Error; err != nil {
+			log.Printf("Error creating merge request GitlabID %d: %v", mrModel.GitlabID, err)
+			return 0, fmt.Errorf("creating merge request GitlabID %d: %w", mrModel.GitlabID, err)
+		}
+	} else {
+		// Exists, update all fields
+		mrModel.ID = existingMR.ID // ensure correct primary key
+		if err := db.Model(&existingMR).Updates(mrModel).Error; err != nil {
+			log.Printf("Error updating merge request GitlabID %d: %v", mrModel.GitlabID, err)
+			return 0, fmt.Errorf("updating merge request GitlabID %d: %w", mrModel.GitlabID, err)
+		}
+		// Keep mrModel.ID in sync for associations
+		mrModel.ID = existingMR.ID
 	}
 
 	// Sync labels
