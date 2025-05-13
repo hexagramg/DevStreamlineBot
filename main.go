@@ -138,6 +138,10 @@ func main() {
 	mrReviewerConsumer := consumers.NewMRReviewerConsumer(db, vkBot, glClient, cfg.Gitlab.PollInterval)
 	mrReviewerConsumer.StartConsumer()
 
+	// Initialize and start review digest consumer
+	reviewDigestConsumer := consumers.NewReviewDigestConsumer(db, vkBot)
+	reviewDigestConsumer.StartConsumer()
+
 	// Block forever
 	select {}
 }

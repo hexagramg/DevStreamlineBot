@@ -63,6 +63,7 @@ func (c *MRReviewerConsumer) assignReviewers() {
 
 	if len(mrs) == 0 {
 		// No MRs need reviewers at this moment.
+		log.Print("No merge requests need reviewers.")
 		return
 	}
 
@@ -74,6 +75,7 @@ func (c *MRReviewerConsumer) assignReviewers() {
 			continue
 		}
 		if len(prs) == 0 {
+			log.Printf("no possible reviewers for repository %d", mr.RepositoryID)
 			continue
 		}
 		ids := make([]uint, len(prs))
@@ -82,9 +84,14 @@ func (c *MRReviewerConsumer) assignReviewers() {
 		}
 		var users []models.User
 		if err := c.db.Where("id IN ? AND id <> ?", ids, mr.AuthorID).Find(&users).Error; err != nil || len(users) == 0 {
+			log.Printf("failed to fetch users for repository %d: %v", mr.RepositoryID, err)
 			continue
 		}
 		// select reviewer using uniform distribution with balancing
+		if len(users) == 0 {
+			log.Printf("no possible reviewers for repository %d", mr.RepositoryID)
+			continue
+		}
 		idx := c.pickReviewer(users)
 		reviewer := users[idx]
 
@@ -226,6 +233,7 @@ func (c *MRReviewerConsumer) pickReviewer(users []models.User) int {
 			return i
 		}
 	}
-
+	log.Printf("Failed to select reviewer based on weights, falling back to random selection")
+	// Fallback to random selection if all else fails
 	return rand.Intn(len(users))
 }

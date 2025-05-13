@@ -13,6 +13,7 @@ import (
 
 	"devstreamlinebot/models"
 	"devstreamlinebot/polling"
+	"devstreamlinebot/utils"
 )
 
 // VKCommandConsumer processes VK Teams messages and looks for commands.
@@ -52,6 +53,10 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleReviewersCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/reviews") {
 		c.handleReviewsCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/send_digest") {
+		c.handleSendDigestCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/get_mr_info") {
+		c.handleGetMRInfoCommand(msg, from)
 	}
 }
 
@@ -346,6 +351,126 @@ func (c *VKCommandConsumer) handleReviewsCommand(msg *botgolang.Message, from bo
 	if err := replyMsg.Send(); err != nil {
 		log.Printf("failed to send reviews digest: %v", err)
 	}
+}
+
+// handleSendDigestCommand sends an immediate review digest for the current chat.
+func (c *VKCommandConsumer) handleSendDigestCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	chatID := fmt.Sprint(msg.Chat.ID)
+
+	// Find chat in database
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found in database")
+		return
+	}
+
+	// Fetch repositories subscribed by this chat
+	var subs []models.RepositorySubscription
+	if err := c.db.
+		Preload("Repository").
+		Where("chat_id = ?", chat.ID).
+		Find(&subs).Error; err != nil {
+		c.sendReply(msg, "Failed to fetch subscriptions. Please try again later.")
+		return
+	}
+
+	var repoIDs []uint
+	for _, s := range subs {
+		repoIDs = append(repoIDs, s.RepositoryID)
+	}
+
+	if len(repoIDs) == 0 {
+		c.sendReply(msg, "No repository subscriptions found for this chat")
+		return
+	}
+
+	// Find open MRs with reviewers but no approvers in these repos
+	mrs, err := utils.FindDigestMergeRequests(c.db, repoIDs)
+	if err != nil {
+		c.sendReply(msg, "Failed to fetch merge requests. Please try again later.")
+		return
+	}
+
+	if len(mrs) == 0 {
+		c.sendReply(msg, "No pending reviews found for subscribed repositories")
+		return
+	}
+
+	// Build digest message
+	text := utils.BuildReviewDigest(c.db, mrs)
+	// Send digest
+	c.sendReply(msg, text)
+}
+
+// handleGetMRInfoCommand processes the /get_mr_info command to fetch local MR info by reference (e.g., intdev/jobofferapp!2103).
+func (c *VKCommandConsumer) handleGetMRInfoCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	parts := strings.Fields(msg.Text)
+	if len(parts) < 2 {
+		c.sendReply(msg, "Usage: /get_mr_info <project_path!iid> (e.g., intdev/jobofferapp!2103)")
+		return
+	}
+	ref := strings.TrimSpace(parts[1])
+	bangIdx := strings.LastIndex(ref, "!")
+	if bangIdx == -1 || bangIdx == 0 || bangIdx == len(ref)-1 {
+		c.sendReply(msg, "Invalid reference format. Use <project_path!iid> (e.g., intdev/jobofferapp!2103)")
+		return
+	}
+	projectPath := ref[:bangIdx]
+	mrIID := ref[bangIdx+1:]
+	// Find repository by WebURL containing projectPath
+	var repo models.Repository
+	if err := c.db.Where("web_url LIKE ?", "%"+projectPath+"%").First(&repo).Error; err != nil {
+		c.sendReply(msg, "Repository not found for this reference.")
+		return
+	}
+	// Find MR by repo and IID, preload Author, Reviewers, Approvers
+	var mr models.MergeRequest
+	if err := c.db.Where("repository_id = ? AND iid = ?", repo.ID, mrIID).
+		Preload("Author").
+		Preload("Reviewers").
+		Preload("Approvers").
+		First(&mr).Error; err != nil {
+		c.sendReply(msg, "Merge request not found in local database.")
+		return
+	}
+	// Get reviewers and approvers usernames
+	reviewerNames := make([]string, 0, len(mr.Reviewers))
+	for _, u := range mr.Reviewers {
+		reviewerNames = append(reviewerNames, "@"+u.Username)
+	}
+	approverNames := make([]string, 0, len(mr.Approvers))
+	for _, u := range mr.Approvers {
+		approverNames = append(approverNames, "@"+u.Username)
+	}
+	// Get active subscriptions (chat titles)
+	var subs []models.RepositorySubscription
+	if err := c.db.Where("repository_id = ?", repo.ID).Preload("Chat").Find(&subs).Error; err != nil {
+		subs = nil
+	}
+	chatTitles := make([]string, 0, len(subs))
+	for _, s := range subs {
+		if s.Chat.Title != "" {
+			chatTitles = append(chatTitles, s.Chat.Title)
+		}
+	}
+	// Format gitlab_created_at
+	createdAt := ""
+	if mr.GitlabCreatedAt != nil {
+		createdAt = mr.GitlabCreatedAt.Format("2006-01-02 15:04:05")
+	}
+	// Build info message
+	info := fmt.Sprintf(
+		"MR #%d: %s\nState: %s\nAuthor: @%s\nCreated: %s\nURL: %s\nReviewers: %s\nApprovers: %s\nActive subscriptions: %s",
+		mr.IID,
+		mr.Title,
+		mr.State,
+		mr.Author.Username,
+		createdAt,
+		mr.WebURL,
+		strings.Join(reviewerNames, ", "),
+		strings.Join(approverNames, ", "),
+		strings.Join(chatTitles, ", "))
+	c.sendReply(msg, info)
 }
 
 // sendReply sends a reply message to the given message.

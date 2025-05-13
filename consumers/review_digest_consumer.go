@@ -1,7 +1,6 @@
 package consumers
 
 import (
-	"fmt"
 	"log"
 	"time"
 
@@ -9,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"devstreamlinebot/models"
+	"devstreamlinebot/utils"
 )
 
 // ReviewDigestConsumer sends a daily summary of open merge requests awaiting review approvals.
@@ -84,15 +84,8 @@ func (c *ReviewDigestConsumer) sendDigest() {
 		}
 
 		// find open MRs with reviewers but no approvers in these repos
-		var mrs []models.MergeRequest
-		if err := c.db.
-			Preload("Author").
-			Preload("Reviewers").
-			Where("merge_requests.state = ? AND merge_requests.merged_at IS NULL", "opened").
-			Where("EXISTS (SELECT 1 FROM merge_request_reviewers mrr WHERE mrr.merge_request_id = merge_requests.id)").
-			Where("NOT EXISTS (SELECT 1 FROM merge_request_approvers mra WHERE mra.merge_request_id = merge_requests.id)").
-			Where("repository_id IN ?", repoIDs).
-			Find(&mrs).Error; err != nil {
+		mrs, err := utils.FindDigestMergeRequests(c.db, repoIDs)
+		if err != nil {
 			log.Printf("failed to fetch pending MRs for chat %s: %v", chat.ChatID, err)
 			continue
 		}
@@ -101,35 +94,7 @@ func (c *ReviewDigestConsumer) sendDigest() {
 		}
 
 		// build message
-		text := "REVIEW DIGEST:\n"
-		for _, mr := range mrs {
-			// author mention fallback
-			authorMention := mr.Author.Email
-			if authorMention == "" {
-				var vkUser models.VKUser
-				if err := c.db.Where("user_id LIKE ?", mr.Author.Username+"% ").First(&vkUser).Error; err == nil {
-					authorMention = vkUser.UserID
-				} else {
-					authorMention = mr.Author.Username
-				}
-			}
-			// reviewer mention fallback - pick first reviewer
-			reviewerMention := ""
-			if len(mr.Reviewers) > 0 {
-				rv := mr.Reviewers[0]
-				reviewerMention = rv.Email
-				if reviewerMention == "" {
-					var vkUser models.VKUser
-					if err := c.db.Where("user_id LIKE ?", rv.Username+"% ").First(&vkUser).Error; err == nil {
-						reviewerMention = vkUser.UserID
-					} else {
-						reviewerMention = rv.Username
-					}
-				}
-			}
-			text += fmt.Sprintf("- %s\n  %s\n  author: @[%s] reviewer: @[%s]\n", mr.Title, mr.WebURL, authorMention, reviewerMention)
-		}
-
+		text := utils.BuildReviewDigest(c.db, mrs)
 		msg := c.vkBot.NewTextMessage(chat.ChatID, text)
 		if err := msg.Send(); err != nil {
 			log.Printf("failed to send review digest to chat %s: %v", chat.ChatID, err)
