@@ -132,7 +132,7 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 	} else {
 		// Exists, update all fields
 		mrModel.ID = existingMR.ID // ensure correct primary key
-		if err := db.Model(&existingMR).Updates(mrModel).Error; err != nil {
+		if err := db.Model(&existingMR).Select("*").Updates(mrModel).Error; err != nil {
 			log.Printf("Error updating merge request GitlabID %d: %v", mrModel.GitlabID, err)
 			return 0, fmt.Errorf("updating merge request GitlabID %d: %w", mrModel.GitlabID, err)
 		}
