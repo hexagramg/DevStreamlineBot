@@ -95,8 +95,8 @@ type MergeRequest struct {
 	gorm.Model
 
 	// GitLab identifiers
-	GitlabID int `json:"id" gorm:"not null;index:idx_mr_project_iid,unique"`  // global MR ID
-	IID      int `json:"iid" gorm:"not null;index:idx_mr_project_iid,unique"` // project-scoped MR IID
+	GitlabID int `json:"id" gorm:"not null;uniqueIndex:idx_mr_gitlab_id"`       // global MR ID, should be unique
+	IID      int `json:"iid" gorm:"not null;uniqueIndex:idx_mr_repository_iid"` // project-scoped MR IID, unique within a repository
 
 	// Branch info
 	SourceBranch string
@@ -162,7 +162,7 @@ type MergeRequest struct {
 	Reviewers   []User `gorm:"many2many:merge_request_reviewers"`
 	Approvers   []User `gorm:"many2many:merge_request_approvers"`
 
-	RepositoryID uint
+	RepositoryID uint `gorm:"uniqueIndex:idx_mr_repository_iid"` // Part of composite unique key with IID
 	Repository   Repository
 }
 
