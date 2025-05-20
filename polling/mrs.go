@@ -221,140 +221,134 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 	return mrModel.ID, nil
 }
 
-// StartMergeRequestPolling begins a background loop to sync GitLab merge requests.
-func StartMergeRequestPolling(db *gorm.DB, client *gitlab.Client, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	go func() {
-		defer ticker.Stop()
-		for range ticker.C {
-			var repos []models.Repository
-			if err := db.Where("EXISTS (SELECT 1 FROM repository_subscriptions WHERE repository_subscriptions.repository_id = repositories.id)").
-				Find(&repos).Error; err != nil {
-				log.Printf("failed to fetch repositories with subscriptions: %v", err)
-				continue
+// PollMergeRequests repositoriy polling logic.
+func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
+	var repos []models.Repository
+	if err := db.Where("EXISTS (SELECT 1 FROM repository_subscriptions WHERE repository_subscriptions.repository_id = repositories.id)").
+		Find(&repos).Error; err != nil {
+		log.Printf("failed to fetch repositories with subscriptions: %v", err)
+		return
+	}
+	for _, repo := range repos {
+		log.Printf("Polling merge requests for repository: %s (GitLab ID: %d)", repo.Name, repo.GitlabID)
+		allCurrentlyOpenGitlabMRs := []*gitlab.BasicMergeRequest{}
+		opts := &gitlab.ListProjectMergeRequestsOptions{
+			State:       gitlab.Ptr("opened"),
+			ListOptions: gitlab.ListOptions{PerPage: 100, Page: 1},
+		}
+
+		// 1. Fetch all currently open MRs from GitLab with pagination
+		for {
+			mrsPage, resp, err := client.MergeRequests.ListProjectMergeRequests(repo.GitlabID, opts)
+			if err != nil {
+				log.Printf("Error listing merge requests for project %d page %d: %v", repo.GitlabID, opts.Page, err)
+				break // Break from pagination loop for this repo on error
 			}
-			for _, repo := range repos {
-				log.Printf("Polling merge requests for repository: %s (GitLab ID: %d)", repo.Name, repo.GitlabID)
-				allCurrentlyOpenGitlabMRs := []*gitlab.BasicMergeRequest{}
-				opts := &gitlab.ListProjectMergeRequestsOptions{
-					State:       gitlab.Ptr("opened"),
-					ListOptions: gitlab.ListOptions{PerPage: 100, Page: 1},
-				}
 
-				// 1. Fetch all currently open MRs from GitLab with pagination
-				for {
-					mrsPage, resp, err := client.MergeRequests.ListProjectMergeRequests(repo.GitlabID, opts)
-					if err != nil {
-						log.Printf("Error listing merge requests for project %d page %d: %v", repo.GitlabID, opts.Page, err)
-						break // Break from pagination loop for this repo on error
-					}
+			// Add merge requests directly to our collection without fetching full details
+			allCurrentlyOpenGitlabMRs = append(allCurrentlyOpenGitlabMRs, mrsPage...)
 
-					// Add merge requests directly to our collection without fetching full details
-					allCurrentlyOpenGitlabMRs = append(allCurrentlyOpenGitlabMRs, mrsPage...)
+			if resp.NextPage == 0 {
+				break
+			}
+			opts.Page = resp.NextPage
+		}
+		log.Printf("Fetched %d open merge requests from GitLab for repository %s", len(allCurrentlyOpenGitlabMRs), repo.Name)
 
-					if resp.NextPage == 0 {
-						break
-					}
-					opts.Page = resp.NextPage
-				}
-				log.Printf("Fetched %d open merge requests from GitLab for repository %s", len(allCurrentlyOpenGitlabMRs), repo.Name)
+		// Track database IDs of processed MRs
+		processedMRIDs := make([]uint, 0, len(allCurrentlyOpenGitlabMRs))
 
-				// Track database IDs of processed MRs
-				processedMRIDs := make([]uint, 0, len(allCurrentlyOpenGitlabMRs))
-
-				// 2. Process/Upsert these fetched open MRs
-				for _, gitlabMR := range allCurrentlyOpenGitlabMRs {
-					mrID, err := syncGitLabMRToDB(db, client, gitlabMR, repo.ID, repo.GitlabID)
-					if err != nil {
-						log.Printf("Failed to sync open MR from GitLab API (ProjectID: %d, MR IID: %d, MR ID: %d): %v", repo.GitlabID, gitlabMR.IID, gitlabMR.ID, err)
-					} else {
-						processedMRIDs = append(processedMRIDs, mrID)
-					}
-				}
-
-				// 3. Find and sync stale MRs (present in DB as 'opened' but not in the processed list)
-				var dbOpenMRs []models.MergeRequest
-				query := db.Where("repository_id = ? AND state = ?", repo.ID, "opened")
-
-				// Exclude already processed MRs if we have any
-				if len(processedMRIDs) > 0 {
-					query = query.Where("id NOT IN ?", processedMRIDs)
-				}
-
-				if err := query.Find(&dbOpenMRs).Error; err != nil {
-					log.Printf("Error fetching 'opened' MRs from DB for repo %d: %v", repo.ID, err)
-					continue // Skip to next repository
-				}
-
-				for _, dbMR := range dbOpenMRs {
-					// This MR is 'opened' in DB but not in GitLab's 'opened' list. Re-check its status.
-					log.Printf("Re-syncing potentially stale MR: RepoGitlabID %d, MR IID %d (DB ID %d, MR GitlabID %d)", repo.GitlabID, dbMR.IID, dbMR.ID, dbMR.GitlabID)
-					fullMRDetails, resp, err := client.MergeRequests.GetMergeRequest(repo.GitlabID, dbMR.IID, nil)
-					if err != nil {
-						if resp != nil && resp.StatusCode == 404 {
-							log.Printf("Stale MR not found on GitLab (404): RepoGitlabID %d, MR IID %d. Marking as 'closed'.", repo.GitlabID, dbMR.IID)
-							updateData := map[string]interface{}{"state": "closed", "last_update": time.Now()}
-							if err := db.Model(&models.MergeRequest{}).Where("id = ?", dbMR.ID).Updates(updateData).Error; err != nil {
-								log.Printf("Error updating stale MR (ID %d, GitlabID %d) to closed: %v", dbMR.ID, dbMR.GitlabID, err)
-							}
-						} else {
-							log.Printf("Error fetching details for stale MR: RepoGitlabID %d, MR IID %d: %v", repo.GitlabID, dbMR.IID, err)
-						}
-						continue // Next stale MR
-					}
-
-					// Convert fullMRDetails to *gitlab.BasicMergeRequest
-					basicMR := &gitlab.BasicMergeRequest{
-						ID:                          fullMRDetails.ID,
-						IID:                         fullMRDetails.IID,
-						Title:                       fullMRDetails.Title,
-						Description:                 fullMRDetails.Description,
-						State:                       fullMRDetails.State,
-						SourceBranch:                fullMRDetails.SourceBranch,
-						TargetBranch:                fullMRDetails.TargetBranch,
-						WebURL:                      fullMRDetails.WebURL,
-						Upvotes:                     fullMRDetails.Upvotes,
-						Downvotes:                   fullMRDetails.Downvotes,
-						DiscussionLocked:            fullMRDetails.DiscussionLocked,
-						ShouldRemoveSourceBranch:    fullMRDetails.ShouldRemoveSourceBranch,
-						ForceRemoveSourceBranch:     fullMRDetails.ForceRemoveSourceBranch,
-						Author:                      fullMRDetails.Author,
-						Assignee:                    fullMRDetails.Assignee,
-						Labels:                      fullMRDetails.Labels,
-						Reviewers:                   fullMRDetails.Reviewers,
-						HasConflicts:                fullMRDetails.HasConflicts,
-						BlockingDiscussionsResolved: fullMRDetails.BlockingDiscussionsResolved,
-						DetailedMergeStatus:         fullMRDetails.DetailedMergeStatus,
-						Draft:                       fullMRDetails.Draft,
-						References:                  fullMRDetails.References,
-						TimeStats:                   fullMRDetails.TimeStats,
-						CreatedAt:                   fullMRDetails.CreatedAt,
-						UpdatedAt:                   fullMRDetails.UpdatedAt,
-						MergedAt:                    fullMRDetails.MergedAt,
-						MergeAfter:                  fullMRDetails.MergeAfter,
-						PreparedAt:                  fullMRDetails.PreparedAt,
-						ClosedAt:                    fullMRDetails.ClosedAt,
-						SourceProjectID:             fullMRDetails.SourceProjectID,
-						TargetProjectID:             fullMRDetails.TargetProjectID,
-						MergeWhenPipelineSucceeds:   fullMRDetails.MergeWhenPipelineSucceeds,
-						SHA:                         fullMRDetails.SHA,
-						MergeCommitSHA:              fullMRDetails.MergeCommitSHA,
-						SquashCommitSHA:             fullMRDetails.SquashCommitSHA,
-						Squash:                      fullMRDetails.Squash,
-						SquashOnMerge:               fullMRDetails.SquashOnMerge,
-						UserNotesCount:              fullMRDetails.UserNotesCount,
-					}
-
-					// Fetched details, now sync them
-					_, err = syncGitLabMRToDB(db, client, basicMR, repo.ID, repo.GitlabID)
-					if err != nil {
-						log.Printf("Failed to re-sync stale MR (ProjectID: %d, MR IID: %d, MR ID: %d): %v", repo.GitlabID, fullMRDetails.IID, fullMRDetails.ID, err)
-					} else {
-						log.Printf("Successfully re-synced stale MR: RepoGitlabID %d, MR IID %d. New state: %s", repo.GitlabID, fullMRDetails.IID, fullMRDetails.State)
-					}
-				}
-				log.Printf("Finished polling merge requests for repository: %s", repo.Name)
+		// 2. Process/Upsert these fetched open MRs
+		for _, gitlabMR := range allCurrentlyOpenGitlabMRs {
+			mrID, err := syncGitLabMRToDB(db, client, gitlabMR, repo.ID, repo.GitlabID)
+			if err != nil {
+				log.Printf("Failed to sync open MR from GitLab API (ProjectID: %d, MR IID: %d, MR ID: %d): %v", repo.GitlabID, gitlabMR.IID, gitlabMR.ID, err)
+			} else {
+				processedMRIDs = append(processedMRIDs, mrID)
 			}
 		}
-	}()
+
+		// 3. Find and sync stale MRs (present in DB as 'opened' but not in the processed list)
+		var dbOpenMRs []models.MergeRequest
+		query := db.Where("repository_id = ? AND state = ?", repo.ID, "opened")
+
+		// Exclude already processed MRs if we have any
+		if len(processedMRIDs) > 0 {
+			query = query.Where("id NOT IN ?", processedMRIDs)
+		}
+
+		if err := query.Find(&dbOpenMRs).Error; err != nil {
+			log.Printf("Error fetching 'opened' MRs from DB for repo %d: %v", repo.ID, err)
+			continue // Skip to next repository
+		}
+
+		for _, dbMR := range dbOpenMRs {
+			// This MR is 'opened' in DB but not in GitLab's 'opened' list. Re-check its status.
+			log.Printf("Re-syncing potentially stale MR: RepoGitlabID %d, MR IID %d (DB ID %d, MR GitlabID %d)", repo.GitlabID, dbMR.IID, dbMR.ID, dbMR.GitlabID)
+			fullMRDetails, resp, err := client.MergeRequests.GetMergeRequest(repo.GitlabID, dbMR.IID, nil)
+			if err != nil {
+				if resp != nil && resp.StatusCode == 404 {
+					log.Printf("Stale MR not found on GitLab (404): RepoGitlabID %d, MR IID %d. Marking as 'closed'.", repo.GitlabID, dbMR.IID)
+					updateData := map[string]interface{}{"state": "closed", "last_update": time.Now()}
+					if err := db.Model(&models.MergeRequest{}).Where("id = ?", dbMR.ID).Updates(updateData).Error; err != nil {
+						log.Printf("Error updating stale MR (ID %d, GitlabID %d) to closed: %v", dbMR.ID, dbMR.GitlabID, err)
+					}
+				} else {
+					log.Printf("Error fetching details for stale MR: RepoGitlabID %d, MR IID %d: %v", repo.GitlabID, dbMR.IID, err)
+				}
+				continue // Next stale MR
+			}
+
+			// Convert fullMRDetails to *gitlab.BasicMergeRequest
+			basicMR := &gitlab.BasicMergeRequest{
+				ID:                          fullMRDetails.ID,
+				IID:                         fullMRDetails.IID,
+				Title:                       fullMRDetails.Title,
+				Description:                 fullMRDetails.Description,
+				State:                       fullMRDetails.State,
+				SourceBranch:                fullMRDetails.SourceBranch,
+				TargetBranch:                fullMRDetails.TargetBranch,
+				WebURL:                      fullMRDetails.WebURL,
+				Upvotes:                     fullMRDetails.Upvotes,
+				Downvotes:                   fullMRDetails.Downvotes,
+				DiscussionLocked:            fullMRDetails.DiscussionLocked,
+				ShouldRemoveSourceBranch:    fullMRDetails.ShouldRemoveSourceBranch,
+				ForceRemoveSourceBranch:     fullMRDetails.ForceRemoveSourceBranch,
+				Author:                      fullMRDetails.Author,
+				Assignee:                    fullMRDetails.Assignee,
+				Labels:                      fullMRDetails.Labels,
+				Reviewers:                   fullMRDetails.Reviewers,
+				HasConflicts:                fullMRDetails.HasConflicts,
+				BlockingDiscussionsResolved: fullMRDetails.BlockingDiscussionsResolved,
+				DetailedMergeStatus:         fullMRDetails.DetailedMergeStatus,
+				Draft:                       fullMRDetails.Draft,
+				References:                  fullMRDetails.References,
+				TimeStats:                   fullMRDetails.TimeStats,
+				CreatedAt:                   fullMRDetails.CreatedAt,
+				UpdatedAt:                   fullMRDetails.UpdatedAt,
+				MergedAt:                    fullMRDetails.MergedAt,
+				MergeAfter:                  fullMRDetails.MergeAfter,
+				PreparedAt:                  fullMRDetails.PreparedAt,
+				ClosedAt:                    fullMRDetails.ClosedAt,
+				SourceProjectID:             fullMRDetails.SourceProjectID,
+				TargetProjectID:             fullMRDetails.TargetProjectID,
+				MergeWhenPipelineSucceeds:   fullMRDetails.MergeWhenPipelineSucceeds,
+				SHA:                         fullMRDetails.SHA,
+				MergeCommitSHA:              fullMRDetails.MergeCommitSHA,
+				SquashCommitSHA:             fullMRDetails.SquashCommitSHA,
+				Squash:                      fullMRDetails.Squash,
+				SquashOnMerge:               fullMRDetails.SquashOnMerge,
+				UserNotesCount:              fullMRDetails.UserNotesCount,
+			}
+
+			// Fetched details, now sync them
+			_, err = syncGitLabMRToDB(db, client, basicMR, repo.ID, repo.GitlabID)
+			if err != nil {
+				log.Printf("Failed to re-sync stale MR (ProjectID: %d, MR IID: %d, MR ID: %d): %v", repo.GitlabID, fullMRDetails.IID, fullMRDetails.ID, err)
+			} else {
+				log.Printf("Successfully re-synced stale MR: RepoGitlabID %d, MR IID %d. New state: %s", repo.GitlabID, fullMRDetails.IID, fullMRDetails.State)
+			}
+		}
+		log.Printf("Finished polling merge requests for repository: %s", repo.Name)
+	}
 }

@@ -120,10 +120,6 @@ func main() {
 		opt.Page = resp.NextPage
 	}
 
-	// Start background polling
-	polling.StartRepositoryPolling(db, glClient, cfg.Gitlab.PollInterval)
-	polling.StartMergeRequestPolling(db, glClient, cfg.Gitlab.PollInterval)
-
 	// Start VK message polling and get bot instance and events channel
 	vkBot, vkEvents := polling.StartVKPolling(db, cfg.VK.BaseURL, cfg.VK.Token)
 
@@ -134,13 +130,27 @@ func main() {
 	vkCommandConsumer := consumers.NewVKCommandConsumer(db, vkBot, glClient, vkEvents)
 	vkCommandConsumer.StartConsumer()
 
-	// Initialize and start MR reviewer assignment consumer
+	// Initialize  MR reviewer assignment consumer
 	mrReviewerConsumer := consumers.NewMRReviewerConsumer(db, vkBot, glClient, cfg.Gitlab.PollInterval)
-	mrReviewerConsumer.StartConsumer()
 
 	// Initialize and start review digest consumer
 	reviewDigestConsumer := consumers.NewReviewDigestConsumer(db, vkBot)
 	reviewDigestConsumer.StartConsumer()
+
+	// Run sequentially:
+	// 1. Poll repositories
+	// 2. Poll merge requests
+	// 3. Assign reviewers
+	go func() {
+		ticker := time.NewTicker(cfg.Gitlab.PollInterval)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			polling.PollRepositories(db, glClient)
+			polling.PollMergeRequests(db, glClient)
+			mrReviewerConsumer.AssignReviewers()
+		}
+	}()
 
 	// Block forever
 	select {}

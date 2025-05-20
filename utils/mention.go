@@ -24,21 +24,36 @@ func GetUserMention(db *gorm.DB, user *models.User) string {
 	return user.Username
 }
 
+// SanitizeTitle removes newlines and other problematic characters from a title
+func SanitizeTitle(title string) string {
+	// Replace newlines with spaces
+	title = strings.ReplaceAll(title, "\n", " ")
+	title = strings.ReplaceAll(title, "\r", " ")
+
+	// Remove any consecutive spaces
+	for strings.Contains(title, "  ") {
+		title = strings.ReplaceAll(title, "  ", " ")
+	}
+
+	return strings.TrimSpace(title)
+}
+
 // BuildReviewDigest builds a digest message for a slice of merge requests.
 func BuildReviewDigest(db *gorm.DB, mrs []models.MergeRequest) string {
 	if len(mrs) == 0 {
 		return "No pending reviews found."
 	}
 	var sb strings.Builder
-	sb.WriteString("REVIEW DIGEST:\n")
+	sb.WriteString("REVIEW DIGEST:")
 	for _, mr := range mrs {
 		authorMention := GetUserMention(db, &mr.Author)
 		reviewerMention := ""
 		if len(mr.Reviewers) > 0 {
 			reviewerMention = GetUserMention(db, &mr.Reviewers[0])
 		}
+		sanitizedTitle := SanitizeTitle(mr.Title)
 		sb.WriteString(
-			fmt.Sprintf("- %s\n  %s\n  author: @[%s] reviewer: @[%s]\n", mr.Title, mr.WebURL, authorMention, reviewerMention),
+			fmt.Sprintf("\n- %s\n  %s\n  author: @[%s] reviewer: @[%s]\n", sanitizedTitle, mr.WebURL, authorMention, reviewerMention),
 		)
 	}
 	return sb.String()

@@ -39,13 +39,13 @@ func (c *MRReviewerConsumer) StartConsumer() {
 	go func() {
 		defer ticker.Stop()
 		for range ticker.C {
-			c.assignReviewers()
+			c.AssignReviewers()
 		}
 	}()
 }
 
 // assignReviewers finds unreviewed MRs, picks a reviewer, notifies chats, and marks MR with reviewer.
-func (c *MRReviewerConsumer) assignReviewers() {
+func (c *MRReviewerConsumer) AssignReviewers() {
 	var mrs []models.MergeRequest
 	// load open, not draft, not merged, without existing reviewers or approvers,
 	// and for repositories that have subscriptions
