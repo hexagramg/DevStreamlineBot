@@ -65,6 +65,7 @@ func main() {
 	if err := db.AutoMigrate(
 		&models.Repository{}, &models.User{}, &models.Label{}, &models.Milestone{}, &models.MergeRequest{},
 		&models.Chat{}, &models.VKUser{}, &models.VKMessage{}, &models.RepositorySubscription{}, &models.PossibleReviewer{},
+		&models.LabelReviewer{}, &models.RepositorySLA{}, &models.Holiday{}, &models.MRAction{}, &models.MRComment{},
 	); err != nil {
 		log.Fatalf("failed to migrate database schemas: %v", err)
 	}

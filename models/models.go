@@ -1,10 +1,41 @@
 package models
 
 import (
+	"database/sql/driver"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 )
+
+// Duration is a custom type for storing time.Duration in database as int64 nanoseconds.
+// Implements database/sql Scanner and driver.Valuer interfaces for GORM compatibility.
+type Duration time.Duration
+
+// Value implements driver.Valuer interface for database storage.
+func (d Duration) Value() (driver.Value, error) {
+	return int64(d), nil
+}
+
+// Scan implements sql.Scanner interface for database retrieval.
+func (d *Duration) Scan(value interface{}) error {
+	if value == nil {
+		*d = 0
+		return nil
+	}
+	switch v := value.(type) {
+	case int64:
+		*d = Duration(v)
+	default:
+		return fmt.Errorf("cannot scan %T into Duration", value)
+	}
+	return nil
+}
+
+// ToDuration converts Duration to standard time.Duration.
+func (d Duration) ToDuration() time.Duration {
+	return time.Duration(d)
+}
 
 // Repository represents a GitLab project tracked in the system.
 type Repository struct {
@@ -31,6 +62,7 @@ type User struct {
 	WebURL       string
 	Email        string `gorm:"index"`
 	EmailFetched bool   `gorm:"default:false"`
+	OnVacation   bool   `gorm:"default:false"` // User is on vacation and should not be assigned as reviewer
 
 	UpdatedAt *time.Time
 
@@ -232,4 +264,81 @@ type VKMessage struct {
 	ParseMode     string    // parse mode: HTML, MarkdownV2
 	Deeplink      string    // deeplink for content type Deeplink
 	Timestamp     time.Time // message timestamp
+}
+
+// LabelReviewer links a label name to a user for label-based reviewer assignment.
+// When an MR has matching labels, these reviewers take priority over the default pool.
+type LabelReviewer struct {
+	gorm.Model
+	RepositoryID uint       `gorm:"not null;uniqueIndex:idx_label_reviewer_unique,priority:1"`
+	Repository   Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	LabelName    string     `gorm:"not null;uniqueIndex:idx_label_reviewer_unique,priority:2"`
+	UserID       uint       `gorm:"not null;uniqueIndex:idx_label_reviewer_unique,priority:3"`
+	User         User       `gorm:"constraint:OnDelete:CASCADE;"`
+}
+
+// RepositorySLA stores SLA settings per repository.
+type RepositorySLA struct {
+	gorm.Model
+	RepositoryID   uint       `gorm:"uniqueIndex;not null"`
+	Repository     Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	ReviewDuration Duration   `gorm:"not null;default:0"` // SLA duration for review phase
+	FixesDuration  Duration   `gorm:"not null;default:0"` // SLA duration for fixes phase
+	AssignCount    int        `gorm:"not null;default:1"` // Number of reviewers to assign
+}
+
+// Holiday stores holiday dates per repository for SLA calculation.
+type Holiday struct {
+	gorm.Model
+	RepositoryID uint       `gorm:"not null;uniqueIndex:idx_holiday_unique,priority:1"`
+	Repository   Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	Date         time.Time  `gorm:"type:date;not null;uniqueIndex:idx_holiday_unique,priority:2"`
+}
+
+// MRActionType defines the type of action recorded for an MR.
+type MRActionType string
+
+const (
+	ActionReviewerAssigned MRActionType = "reviewer_assigned"
+	ActionCommentAdded     MRActionType = "comment_added"
+	ActionCommentResolved  MRActionType = "comment_resolved"
+	ActionApproved         MRActionType = "approved"
+	ActionUnapproved       MRActionType = "unapproved"
+	ActionDraftToggled     MRActionType = "draft_toggled"
+	ActionMerged           MRActionType = "merged"
+	ActionClosed           MRActionType = "closed"
+)
+
+// MRAction records timestamped actions for MR timeline tracking.
+// Used to calculate review time and fix time periods per reviewer and per MR.
+type MRAction struct {
+	gorm.Model
+	MergeRequestID uint         `gorm:"not null;index"`
+	MergeRequest   MergeRequest `gorm:"constraint:OnDelete:CASCADE;"`
+	ActionType     MRActionType `gorm:"type:varchar(50);not null;index"`
+	ActorID        *uint        `gorm:"index"` // User who performed the action (nullable for system actions)
+	Actor          *User        `gorm:"constraint:OnDelete:SET NULL;"`
+	TargetUserID   *uint        `gorm:"index"` // For reviewer-specific actions (e.g., which reviewer was assigned)
+	TargetUser     *User        `gorm:"constraint:OnDelete:SET NULL;"`
+	Timestamp      time.Time    `gorm:"not null;index"`
+	Metadata       string       `gorm:"type:text"` // JSON for additional context (e.g., comment ID)
+}
+
+// MRComment tracks discussion comments with resolved state.
+type MRComment struct {
+	gorm.Model
+	MergeRequestID     uint         `gorm:"not null;index"`
+	MergeRequest       MergeRequest `gorm:"constraint:OnDelete:CASCADE;"`
+	GitlabNoteID       int          `gorm:"not null;uniqueIndex"` // GitLab note ID
+	GitlabDiscussionID string       `gorm:"index"`                // GitLab discussion ID
+	AuthorID           uint         `gorm:"not null"`
+	Author             User         `gorm:"constraint:OnDelete:CASCADE;"`
+	Body               string       `gorm:"type:text"`
+	Resolvable         bool         `gorm:"default:false"`
+	Resolved           bool         `gorm:"default:false"`
+	ResolvedByID       *uint
+	ResolvedBy         *User      `gorm:"constraint:OnDelete:SET NULL;"`
+	ResolvedAt         *time.Time // From GitLab API resolved_at field
+	GitlabCreatedAt    time.Time  `gorm:"not null"`
+	GitlabUpdatedAt    time.Time
 }
