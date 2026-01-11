@@ -83,18 +83,18 @@ func (c *ReviewDigestConsumer) sendDigest() {
 			continue
 		}
 
-		// find open MRs with reviewers but no approvers in these repos
-		mrs, err := utils.FindDigestMergeRequests(c.db, repoIDs)
+		// find open MRs with state information for enhanced digest
+		digestMRs, err := utils.FindDigestMergeRequestsWithState(c.db, repoIDs)
 		if err != nil {
 			log.Printf("failed to fetch pending MRs for chat %s: %v", chat.ChatID, err)
 			continue
 		}
-		if len(mrs) == 0 {
+		if len(digestMRs) == 0 {
 			continue // nothing to report
 		}
 
-		// build message
-		text := utils.BuildReviewDigest(c.db, mrs)
+		// build enhanced message with PENDING REVIEW and PENDING FIXES sections
+		text := utils.BuildEnhancedReviewDigest(c.db, digestMRs)
 		msg := c.vkBot.NewTextMessage(chat.ChatID, text)
 		if err := msg.Send(); err != nil {
 			log.Printf("failed to send review digest to chat %s: %v", chat.ChatID, err)
