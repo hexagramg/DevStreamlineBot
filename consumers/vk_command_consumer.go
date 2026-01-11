@@ -44,11 +44,13 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		return
 	}
 
-	// Check commands
+	// Check commands (order matters for prefix matching)
 	if strings.HasPrefix(msg.Text, "/subscribe") {
 		c.handleSubscribeCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/unsubscribe") {
 		c.handleUnsubscribeCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/label_reviewers") {
+		c.handleLabelReviewersCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/reviewers") {
 		c.handleReviewersCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/reviews") {
@@ -57,6 +59,14 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleSendDigestCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/get_mr_info") {
 		c.handleGetMRInfoCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/vacation") {
+		c.handleVacationCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/assign_count") {
+		c.handleAssignCountCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/holidays") {
+		c.handleHolidaysCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/sla") {
+		c.handleSLACommand(msg, from)
 	}
 }
 
@@ -471,6 +481,439 @@ func (c *VKCommandConsumer) handleGetMRInfoCommand(msg *botgolang.Message, _ bot
 		strings.Join(approverNames, ", "),
 		strings.Join(chatTitles, ", "))
 	c.sendReply(msg, info)
+}
+
+// handleVacationCommand toggles vacation status for a GitLab user.
+// Format: /vacation <username>
+func (c *VKCommandConsumer) handleVacationCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	parts := strings.Fields(msg.Text)
+	if len(parts) < 2 {
+		c.sendReply(msg, "Usage: /vacation <username>")
+		return
+	}
+
+	username := strings.TrimSpace(parts[1])
+
+	var user models.User
+	if err := c.db.Where("username = ?", username).First(&user).Error; err != nil {
+		c.sendReply(msg, fmt.Sprintf("User %s not found", username))
+		return
+	}
+
+	user.OnVacation = !user.OnVacation
+	if err := c.db.Save(&user).Error; err != nil {
+		log.Printf("failed to update vacation status for user %s: %v", username, err)
+		c.sendReply(msg, "Failed to update vacation status")
+		return
+	}
+
+	status := "off vacation"
+	if user.OnVacation {
+		status = "on vacation"
+	}
+	c.sendReply(msg, fmt.Sprintf("User %s is now %s", username, status))
+}
+
+// handleAssignCountCommand sets how many reviewers to pick from pool.
+// Format: /assign_count <N>
+func (c *VKCommandConsumer) handleAssignCountCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	parts := strings.Fields(msg.Text)
+	if len(parts) < 2 {
+		c.sendReply(msg, "Usage: /assign_count <N>")
+		return
+	}
+
+	count, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || count < 1 {
+		c.sendReply(msg, "Invalid count. Must be a positive integer.")
+		return
+	}
+
+	// Get subscribed repositories for this chat
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var subs []models.RepositorySubscription
+	c.db.Where("chat_id = ?", chat.ID).Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+
+	// Update or create RepositorySLA for each subscribed repo
+	var repoNames []string
+	for _, sub := range subs {
+		var sla models.RepositorySLA
+		c.db.Where(models.RepositorySLA{RepositoryID: sub.RepositoryID}).
+			Assign(models.RepositorySLA{AssignCount: count}).
+			FirstOrCreate(&sla)
+
+		var repo models.Repository
+		c.db.First(&repo, sub.RepositoryID)
+		repoNames = append(repoNames, repo.Name)
+	}
+
+	c.sendReply(msg, fmt.Sprintf("Assign count set to %d for: %s", count, strings.Join(repoNames, ", ")))
+}
+
+// handleHolidaysCommand sets holiday dates for SLA calculation.
+// Format: /holidays               -> list holidays
+//
+//	/holidays date1 date2 ... -> add holidays (DD.MM.YYYY format)
+//	/holidays remove date1 date2 ... -> remove specific holidays
+func (c *VKCommandConsumer) handleHolidaysCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	// Get subscribed repositories
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var subs []models.RepositorySubscription
+	c.db.Where("chat_id = ?", chat.ID).Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+
+	repoIDs := make([]uint, len(subs))
+	for i, s := range subs {
+		repoIDs[i] = s.RepositoryID
+	}
+
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/holidays"))
+
+	if argStr == "" {
+		// List current holidays
+		var holidays []models.Holiday
+		c.db.Where("repository_id IN ?", repoIDs).Order("date").Find(&holidays)
+
+		if len(holidays) == 0 {
+			c.sendReply(msg, "No holidays configured.")
+			return
+		}
+
+		var dates []string
+		seen := make(map[string]bool)
+		for _, h := range holidays {
+			dateStr := h.Date.Format("02.01.2006")
+			if !seen[dateStr] {
+				dates = append(dates, dateStr)
+				seen[dateStr] = true
+			}
+		}
+		c.sendReply(msg, "Holidays: "+strings.Join(dates, ", "))
+		return
+	}
+
+	// Check for remove command
+	if strings.HasPrefix(argStr, "remove ") {
+		dateStrs := strings.Fields(strings.TrimPrefix(argStr, "remove "))
+		var removed []string
+		var failed []string
+
+		for _, dateStr := range dateStrs {
+			date, err := time.Parse("02.01.2006", dateStr)
+			if err != nil {
+				failed = append(failed, dateStr)
+				continue
+			}
+
+			result := c.db.Where("repository_id IN ? AND date = ?", repoIDs, date).Delete(&models.Holiday{})
+			if result.RowsAffected > 0 {
+				removed = append(removed, dateStr)
+			} else {
+				failed = append(failed, dateStr+" (not found)")
+			}
+		}
+
+		reply := ""
+		if len(removed) > 0 {
+			reply = fmt.Sprintf("Removed holidays: %s", strings.Join(removed, ", "))
+		}
+		if len(failed) > 0 {
+			if reply != "" {
+				reply += "\n"
+			}
+			reply += fmt.Sprintf("Failed: %s", strings.Join(failed, ", "))
+		}
+		c.sendReply(msg, reply)
+		return
+	}
+
+	// Parse and add holidays
+	dateStrs := strings.Fields(argStr)
+	var added []string
+	var failed []string
+
+	for _, dateStr := range dateStrs {
+		date, err := time.Parse("02.01.2006", dateStr)
+		if err != nil {
+			failed = append(failed, dateStr)
+			continue
+		}
+
+		for _, repoID := range repoIDs {
+			holiday := models.Holiday{RepositoryID: repoID, Date: date}
+			c.db.FirstOrCreate(&holiday, models.Holiday{RepositoryID: repoID, Date: date})
+		}
+		added = append(added, dateStr)
+	}
+
+	reply := ""
+	if len(added) > 0 {
+		reply = fmt.Sprintf("Added holidays: %s", strings.Join(added, ", "))
+	}
+	if len(failed) > 0 {
+		if reply != "" {
+			reply += "\n"
+		}
+		reply += fmt.Sprintf("Failed to parse: %s (use DD.MM.YYYY)", strings.Join(failed, ", "))
+	}
+	c.sendReply(msg, reply)
+}
+
+// handleSLACommand sets SLA durations for repository.
+// Format: /sla                    -> show current SLA settings
+//
+//	/sla review <duration>  -> set review SLA
+//	/sla fixes <duration>   -> set fixes SLA
+//
+// Duration format: 1h, 2d, 1w (hours, days, weeks)
+func (c *VKCommandConsumer) handleSLACommand(msg *botgolang.Message, _ botgolang.Contact) {
+	// Get subscribed repositories
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var subs []models.RepositorySubscription
+	c.db.Where("chat_id = ?", chat.ID).Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+
+	parts := strings.Fields(msg.Text)
+
+	// Show current SLA settings if no arguments
+	if len(parts) < 2 {
+		var lines []string
+		for _, sub := range subs {
+			var repo models.Repository
+			c.db.First(&repo, sub.RepositoryID)
+
+			var sla models.RepositorySLA
+			if err := c.db.Where("repository_id = ?", sub.RepositoryID).First(&sla).Error; err != nil {
+				lines = append(lines, fmt.Sprintf("%s: not configured", repo.Name))
+			} else {
+				lines = append(lines, fmt.Sprintf("%s: review=%s, fixes=%s, assign_count=%d",
+					repo.Name,
+					formatDuration(sla.ReviewDuration.ToDuration()),
+					formatDuration(sla.FixesDuration.ToDuration()),
+					sla.AssignCount))
+			}
+		}
+		c.sendReply(msg, "SLA Settings:\n"+strings.Join(lines, "\n"))
+		return
+	}
+
+	if len(parts) < 3 {
+		c.sendReply(msg, "Usage: /sla review <duration> or /sla fixes <duration>\nDuration format: 1h, 2d, 1w")
+		return
+	}
+
+	slaType := strings.ToLower(parts[1])
+	if slaType != "review" && slaType != "fixes" {
+		c.sendReply(msg, "SLA type must be 'review' or 'fixes'")
+		return
+	}
+
+	duration, err := parseDuration(parts[2])
+	if err != nil {
+		c.sendReply(msg, fmt.Sprintf("Invalid duration: %s. Use format like 1h, 2d, 1w", parts[2]))
+		return
+	}
+
+	var repoNames []string
+	for _, sub := range subs {
+		var sla models.RepositorySLA
+		c.db.Where(models.RepositorySLA{RepositoryID: sub.RepositoryID}).FirstOrCreate(&sla)
+
+		if slaType == "review" {
+			sla.ReviewDuration = models.Duration(duration)
+		} else {
+			sla.FixesDuration = models.Duration(duration)
+		}
+		c.db.Save(&sla)
+
+		var repo models.Repository
+		c.db.First(&repo, sub.RepositoryID)
+		repoNames = append(repoNames, repo.Name)
+	}
+
+	c.sendReply(msg, fmt.Sprintf("SLA %s set to %s for: %s", slaType, parts[2], strings.Join(repoNames, ", ")))
+}
+
+// handleLabelReviewersCommand sets reviewers for a specific label.
+// Format: /label_reviewers                     -> list all label-reviewer mappings
+//
+//	/label_reviewers <label>            -> clear label reviewers
+//	/label_reviewers <label> user1,user2,... -> set label reviewers
+func (c *VKCommandConsumer) handleLabelReviewersCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	// Get subscribed repositories
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var subs []models.RepositorySubscription
+	c.db.Where("chat_id = ?", chat.ID).Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+
+	repoIDs := make([]uint, len(subs))
+	for i, s := range subs {
+		repoIDs[i] = s.RepositoryID
+	}
+
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/label_reviewers"))
+
+	if argStr == "" {
+		// List all label-reviewer mappings
+		var labelReviewers []models.LabelReviewer
+		c.db.Where("repository_id IN ?", repoIDs).Preload("User").Find(&labelReviewers)
+
+		if len(labelReviewers) == 0 {
+			c.sendReply(msg, "No label reviewers configured.")
+			return
+		}
+
+		// Group by label
+		labelMap := make(map[string][]string)
+		for _, lr := range labelReviewers {
+			labelMap[lr.LabelName] = append(labelMap[lr.LabelName], lr.User.Username)
+		}
+
+		var lines []string
+		for label, users := range labelMap {
+			lines = append(lines, fmt.Sprintf("%s: %s", label, strings.Join(users, ", ")))
+		}
+		c.sendReply(msg, "Label reviewers:\n"+strings.Join(lines, "\n"))
+		return
+	}
+
+	parts := strings.SplitN(argStr, " ", 2)
+	labelName := strings.TrimSpace(parts[0])
+
+	if len(parts) == 1 {
+		// Clear label reviewers
+		c.db.Where("repository_id IN ? AND label_name = ?", repoIDs, labelName).Delete(&models.LabelReviewer{})
+		c.sendReply(msg, fmt.Sprintf("Cleared reviewers for label '%s'", labelName))
+		return
+	}
+
+	// Parse usernames
+	usernames := strings.Split(parts[1], ",")
+	var added []string
+	var notFound []string
+
+	for _, uname := range usernames {
+		uname = strings.TrimSpace(uname)
+		if uname == "" {
+			continue
+		}
+
+		var user models.User
+		if err := c.db.Where("username = ?", uname).First(&user).Error; err != nil {
+			// Try fetching from GitLab
+			users, _, glErr := c.glClient.Users.ListUsers(&gitlab.ListUsersOptions{Username: gitlab.Ptr(uname)})
+			if glErr != nil || len(users) == 0 {
+				notFound = append(notFound, uname)
+				continue
+			}
+			// Upsert user
+			userData := models.User{
+				GitlabID:  users[0].ID,
+				Username:  users[0].Username,
+				Name:      users[0].Name,
+				State:     users[0].State,
+				AvatarURL: users[0].AvatarURL,
+				WebURL:    users[0].WebURL,
+				Email:     users[0].Email,
+			}
+			c.db.Where(models.User{GitlabID: users[0].ID}).Assign(userData).FirstOrCreate(&user)
+		}
+
+		// Add label reviewer for all repos
+		for _, repoID := range repoIDs {
+			lr := models.LabelReviewer{RepositoryID: repoID, LabelName: labelName, UserID: user.ID}
+			c.db.FirstOrCreate(&lr, models.LabelReviewer{RepositoryID: repoID, LabelName: labelName, UserID: user.ID})
+		}
+		added = append(added, uname)
+	}
+
+	reply := fmt.Sprintf("Label '%s' reviewers set: %s", labelName, strings.Join(added, ", "))
+	if len(notFound) > 0 {
+		reply += fmt.Sprintf(". Not found: %s", strings.Join(notFound, ", "))
+	}
+	c.sendReply(msg, reply)
+}
+
+// parseDuration parses duration strings like "1h", "2d", "1w"
+func parseDuration(s string) (time.Duration, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if len(s) < 2 {
+		return 0, fmt.Errorf("invalid duration format")
+	}
+
+	unit := s[len(s)-1]
+	valueStr := s[:len(s)-1]
+	value, err := strconv.Atoi(valueStr)
+	if err != nil {
+		return 0, err
+	}
+
+	switch unit {
+	case 'h':
+		return time.Duration(value) * time.Hour, nil
+	case 'd':
+		return time.Duration(value) * 24 * time.Hour, nil
+	case 'w':
+		return time.Duration(value) * 7 * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("unknown unit: %c (use h, d, or w)", unit)
+	}
+}
+
+// formatDuration formats a duration for human display
+func formatDuration(d time.Duration) string {
+	if d == 0 {
+		return "not set"
+	}
+
+	hours := int(d.Hours())
+	if hours < 24 {
+		return fmt.Sprintf("%dh", hours)
+	}
+
+	days := hours / 24
+	remainingHours := hours % 24
+	if remainingHours == 0 {
+		return fmt.Sprintf("%dd", days)
+	}
+	return fmt.Sprintf("%dd %dh", days, remainingHours)
 }
 
 // sendReply sends a reply message to the given message.
