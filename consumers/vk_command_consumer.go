@@ -716,8 +716,8 @@ func (c *VKCommandConsumer) handleSLACommand(msg *botgolang.Message, _ botgolang
 			} else {
 				lines = append(lines, fmt.Sprintf("%s: review=%s, fixes=%s, assign_count=%d",
 					repo.Name,
-					formatDuration(sla.ReviewDuration.ToDuration()),
-					formatDuration(sla.FixesDuration.ToDuration()),
+					formatSLADuration(sla.ReviewDuration.ToDuration()),
+					formatSLADuration(sla.FixesDuration.ToDuration()),
 					sla.AssignCount))
 			}
 		}
@@ -736,7 +736,7 @@ func (c *VKCommandConsumer) handleSLACommand(msg *botgolang.Message, _ botgolang
 		return
 	}
 
-	duration, err := parseDuration(parts[2])
+	duration, err := utils.ParseDuration(parts[2])
 	if err != nil {
 		c.sendReply(msg, fmt.Sprintf("Invalid duration: %s. Use format like 1h, 2d, 1w", parts[2]))
 		return
@@ -871,49 +871,12 @@ func (c *VKCommandConsumer) handleLabelReviewersCommand(msg *botgolang.Message, 
 	c.sendReply(msg, reply)
 }
 
-// parseDuration parses duration strings like "1h", "2d", "1w"
-func parseDuration(s string) (time.Duration, error) {
-	s = strings.ToLower(strings.TrimSpace(s))
-	if len(s) < 2 {
-		return 0, fmt.Errorf("invalid duration format")
-	}
-
-	unit := s[len(s)-1]
-	valueStr := s[:len(s)-1]
-	value, err := strconv.Atoi(valueStr)
-	if err != nil {
-		return 0, err
-	}
-
-	switch unit {
-	case 'h':
-		return time.Duration(value) * time.Hour, nil
-	case 'd':
-		return time.Duration(value) * 24 * time.Hour, nil
-	case 'w':
-		return time.Duration(value) * 7 * 24 * time.Hour, nil
-	default:
-		return 0, fmt.Errorf("unknown unit: %c (use h, d, or w)", unit)
-	}
-}
-
-// formatDuration formats a duration for human display
-func formatDuration(d time.Duration) string {
+// formatSLADuration formats a duration for SLA display, returning "not set" for zero values.
+func formatSLADuration(d time.Duration) string {
 	if d == 0 {
 		return "not set"
 	}
-
-	hours := int(d.Hours())
-	if hours < 24 {
-		return fmt.Sprintf("%dh", hours)
-	}
-
-	days := hours / 24
-	remainingHours := hours % 24
-	if remainingHours == 0 {
-		return fmt.Sprintf("%dd", days)
-	}
-	return fmt.Sprintf("%dd %dh", days, remainingHours)
+	return utils.FormatDuration(d)
 }
 
 // sendReply sends a reply message to the given message.

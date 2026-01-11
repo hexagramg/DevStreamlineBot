@@ -282,9 +282,9 @@ type RepositorySLA struct {
 	gorm.Model
 	RepositoryID   uint       `gorm:"uniqueIndex;not null"`
 	Repository     Repository `gorm:"constraint:OnDelete:CASCADE;"`
-	ReviewDuration Duration   `gorm:"not null;default:0"` // SLA duration for review phase
-	FixesDuration  Duration   `gorm:"not null;default:0"` // SLA duration for fixes phase
-	AssignCount    int        `gorm:"not null;default:1"` // Number of reviewers to assign
+	ReviewDuration Duration   `gorm:"not null;default:172800000000000"` // SLA duration for review phase (default 48h)
+	FixesDuration  Duration   `gorm:"not null;default:172800000000000"` // SLA duration for fixes phase (default 48h)
+	AssignCount    int        `gorm:"not null;default:1"`               // Number of reviewers to assign
 }
 
 // Holiday stores holiday dates per repository for SLA calculation.
