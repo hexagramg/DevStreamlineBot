@@ -320,8 +320,10 @@ type MRAction struct {
 	Actor          *User        `gorm:"constraint:OnDelete:SET NULL;"`
 	TargetUserID   *uint        `gorm:"index"` // For reviewer-specific actions (e.g., which reviewer was assigned)
 	TargetUser     *User        `gorm:"constraint:OnDelete:SET NULL;"`
+	CommentID      *uint        `gorm:"index"` // Reference to MRComment for comment-related actions
+	Comment        *MRComment   `gorm:"constraint:OnDelete:SET NULL;"`
 	Timestamp      time.Time    `gorm:"not null;index"`
-	Metadata       string       `gorm:"type:text"` // JSON for additional context (e.g., comment ID)
+	Metadata       string       `gorm:"type:text"` // JSON for additional context (e.g., draft state)
 }
 
 // MRComment tracks discussion comments with resolved state.
