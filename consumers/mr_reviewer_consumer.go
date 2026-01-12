@@ -426,14 +426,48 @@ func (c *MRReviewerConsumer) pickReviewerFromPool(users []models.User, reviewCou
 }
 
 // formatReviewerMentions formats reviewer mentions for notification message.
+// Uses batch query to avoid N+1 DB queries when looking up VKUsers.
 func (c *MRReviewerConsumer) formatReviewerMentions(reviewers []models.User) string {
+	// Collect usernames needing VK lookup (those without email)
+	var usernamesToLookup []string
+	for _, r := range reviewers {
+		if r.Email == "" {
+			usernamesToLookup = append(usernamesToLookup, r.Username)
+		}
+	}
+
+	// Batch fetch VKUsers with OR conditions
+	vkUserMap := make(map[string]string) // username -> UserID
+	if len(usernamesToLookup) > 0 {
+		var vkUsers []models.VKUser
+		query := c.db
+		for i, username := range usernamesToLookup {
+			if i == 0 {
+				query = query.Where("user_id LIKE ?", username+"%")
+			} else {
+				query = query.Or("user_id LIKE ?", username+"%")
+			}
+		}
+		query.Find(&vkUsers)
+
+		// Map VKUsers by matching username prefix
+		for _, vk := range vkUsers {
+			for _, username := range usernamesToLookup {
+				if strings.HasPrefix(vk.UserID, username) {
+					vkUserMap[username] = vk.UserID
+					break
+				}
+			}
+		}
+	}
+
+	// Build mentions using the pre-fetched map
 	mentions := make([]string, len(reviewers))
 	for i, reviewer := range reviewers {
 		mention := reviewer.Email
 		if mention == "" {
-			var vkUser models.VKUser
-			if err := c.db.Where("user_id LIKE ?", reviewer.Username+"%").First(&vkUser).Error; err == nil {
-				mention = vkUser.UserID
+			if vkID, ok := vkUserMap[reviewer.Username]; ok {
+				mention = vkID
 			} else {
 				mention = reviewer.Username
 			}

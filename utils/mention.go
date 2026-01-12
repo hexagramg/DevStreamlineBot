@@ -18,7 +18,7 @@ func GetUserMention(db *gorm.DB, user *models.User) string {
 	}
 	// Try to find VKUser by UserID LIKE username
 	var vkUser models.VKUser
-	if err := db.Where("user_id LIKE ?", user.Username+"% ").First(&vkUser).Error; err == nil {
+	if err := db.Where("user_id LIKE ?", user.Username+"%").First(&vkUser).Error; err == nil {
 		return vkUser.UserID
 	}
 	return user.Username

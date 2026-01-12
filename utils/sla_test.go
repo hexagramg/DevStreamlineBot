@@ -130,3 +130,68 @@ func TestSLAStatusString(t *testing.T) {
 		})
 	}
 }
+
+func TestCountWeekendsInRange(t *testing.T) {
+	// Monday Jan 6, 2025
+	monday := time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name  string
+		start time.Time
+		end   time.Time
+		want  int
+	}{
+		{"empty range", monday, monday, 0},
+		{"end before start", monday, monday.AddDate(0, 0, -1), 0},
+		{"1 day (Mon)", monday, monday.AddDate(0, 0, 1), 0},
+		{"5 days Mon-Fri", monday, monday.AddDate(0, 0, 5), 0},
+		{"6 days Mon-Sat", monday, monday.AddDate(0, 0, 6), 1},
+		{"7 days Mon-Sun (full week)", monday, monday.AddDate(0, 0, 7), 2},
+		{"8 days Mon-Mon", monday, monday.AddDate(0, 0, 8), 2},
+		{"14 days (2 weeks)", monday, monday.AddDate(0, 0, 14), 4},
+		{"21 days (3 weeks)", monday, monday.AddDate(0, 0, 21), 6},
+		{"starting on Saturday", monday.AddDate(0, 0, 5), monday.AddDate(0, 0, 12), 2},
+		{"starting on Sunday", monday.AddDate(0, 0, 6), monday.AddDate(0, 0, 13), 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := countWeekendsInRange(tt.start, tt.end)
+			if got != tt.want {
+				t.Errorf("countWeekendsInRange() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsWorkingDaySimple(t *testing.T) {
+	holidaySet := map[string]bool{
+		"2025-01-01": true, // Wednesday (holiday)
+		"2025-01-04": true, // Saturday (holiday on weekend)
+	}
+
+	tests := []struct {
+		name       string
+		weekday    time.Weekday
+		dateKey    string
+		holidaySet map[string]bool
+		want       bool
+	}{
+		{"Monday working day", time.Monday, "2025-01-06", holidaySet, true},
+		{"Friday working day", time.Friday, "2025-01-03", holidaySet, true},
+		{"Saturday not working", time.Saturday, "2025-01-04", holidaySet, false},
+		{"Sunday not working", time.Sunday, "2025-01-05", holidaySet, false},
+		{"Holiday on weekday", time.Wednesday, "2025-01-01", holidaySet, false},
+		{"Non-holiday weekday", time.Wednesday, "2025-01-08", holidaySet, true},
+		{"Empty holiday set", time.Monday, "2025-01-06", map[string]bool{}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isWorkingDaySimple(tt.weekday, tt.dateKey, tt.holidaySet)
+			if got != tt.want {
+				t.Errorf("isWorkingDaySimple() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

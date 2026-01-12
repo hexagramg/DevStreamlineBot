@@ -66,52 +66,103 @@ func FormatDuration(d time.Duration) string {
 	return strings.Join(parts, " ")
 }
 
-// CalculateWorkingTime calculates working time between start and end,
-// excluding weekends (Saturday, Sunday) and holidays stored in the database.
-func CalculateWorkingTime(db *gorm.DB, repoID uint, start, end time.Time) time.Duration {
-	if end.Before(start) {
+// isWorkingDaySimple checks if a day is a working day using pre-fetched holiday set.
+func isWorkingDaySimple(weekday time.Weekday, dateKey string, holidaySet map[string]bool) bool {
+	if weekday == time.Saturday || weekday == time.Sunday {
+		return false
+	}
+	return !holidaySet[dateKey]
+}
+
+// countWeekendsInRange counts weekend days (Sat+Sun) in the range [start, end).
+// Uses formula for full weeks plus iteration for remainder.
+func countWeekendsInRange(start, end time.Time) int {
+	if !start.Before(end) {
 		return 0
 	}
 
-	// Fetch holidays for this repository
-	var holidays []models.Holiday
-	db.Where("repository_id = ?", repoID).Find(&holidays)
+	totalDays := int(end.Sub(start).Hours() / 24)
+	fullWeeks := totalDays / 7
+	count := fullWeeks * 2 // 2 weekend days per week
 
-	// Create a set of holiday dates for fast lookup (normalized to date only)
-	holidaySet := make(map[string]bool)
-	for _, h := range holidays {
-		dateKey := h.Date.Format("2006-01-02")
-		holidaySet[dateKey] = true
+	// Count remaining days
+	remaining := totalDays % 7
+	current := start.AddDate(0, 0, fullWeeks*7)
+	for i := 0; i < remaining; i++ {
+		if current.Weekday() == time.Saturday || current.Weekday() == time.Sunday {
+			count++
+		}
+		current = current.AddDate(0, 0, 1)
+	}
+	return count
+}
+
+// CalculateWorkingTime calculates working time between start and end,
+// excluding weekends (Saturday, Sunday) and holidays stored in the database.
+// Optimized: O(holidays) instead of O(hours) by counting middle days in bulk.
+func CalculateWorkingTime(db *gorm.DB, repoID uint, start, end time.Time) time.Duration {
+	if end.Before(start) || end.Equal(start) {
+		return 0
 	}
 
-	// Count working hours
+	// Fetch holidays once
+	var holidays []models.Holiday
+	db.Where("repository_id = ?", repoID).Find(&holidays)
+	holidaySet := make(map[string]bool)
+	for _, h := range holidays {
+		holidaySet[h.Date.Format("2006-01-02")] = true
+	}
+
+	// Normalize to day boundaries (midnight UTC)
+	startDay := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, start.Location())
+	endDay := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, end.Location())
+
+	// Case 1: Same day
+	if startDay.Equal(endDay) {
+		if isWorkingDaySimple(start.Weekday(), startDay.Format("2006-01-02"), holidaySet) {
+			return end.Sub(start)
+		}
+		return 0
+	}
+
 	var totalHours float64
 
-	// Normalize start to beginning of hour
-	current := start.Truncate(time.Hour)
+	// First day: start → midnight (partial)
+	if isWorkingDaySimple(start.Weekday(), startDay.Format("2006-01-02"), holidaySet) {
+		nextMidnight := startDay.AddDate(0, 0, 1)
+		totalHours += nextMidnight.Sub(start).Hours()
+	}
 
-	for current.Before(end) {
-		weekday := current.Weekday()
-		dateKey := current.Format("2006-01-02")
+	// Middle days: full 24h each (bulk calculation)
+	middleStart := startDay.AddDate(0, 0, 1)
+	middleEnd := endDay
+	if middleStart.Before(middleEnd) {
+		totalMiddleDays := int(middleEnd.Sub(middleStart).Hours() / 24)
+		weekendDays := countWeekendsInRange(middleStart, middleEnd)
 
-		// Skip weekends and holidays
-		if weekday != time.Saturday && weekday != time.Sunday && !holidaySet[dateKey] {
-			// Calculate hours contribution for this slot
-			slotEnd := current.Add(time.Hour)
-			if slotEnd.After(end) {
-				slotEnd = end
+		// Count holidays that fall on weekdays in middle range
+		holidaysOnWeekdays := 0
+		for dateKey := range holidaySet {
+			date, err := time.ParseInLocation("2006-01-02", dateKey, start.Location())
+			if err != nil {
+				continue
 			}
-
-			slotStart := current
-			if slotStart.Before(start) {
-				slotStart = start
+			if !date.Before(middleStart) && date.Before(middleEnd) {
+				if date.Weekday() != time.Saturday && date.Weekday() != time.Sunday {
+					holidaysOnWeekdays++
+				}
 			}
-
-			contribution := slotEnd.Sub(slotStart).Hours()
-			totalHours += contribution
 		}
 
-		current = current.Add(time.Hour)
+		workingDays := totalMiddleDays - weekendDays - holidaysOnWeekdays
+		if workingDays > 0 {
+			totalHours += float64(workingDays) * 24
+		}
+	}
+
+	// Last day: midnight → end (partial)
+	if isWorkingDaySimple(end.Weekday(), endDay.Format("2006-01-02"), holidaySet) {
+		totalHours += end.Sub(endDay).Hours()
 	}
 
 	return time.Duration(totalHours * float64(time.Hour))

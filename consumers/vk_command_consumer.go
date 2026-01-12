@@ -548,9 +548,11 @@ func (c *VKCommandConsumer) handleAssignCountCommand(msg *botgolang.Message, _ b
 	var repoNames []string
 	for _, sub := range subs {
 		var sla models.RepositorySLA
-		c.db.Where(models.RepositorySLA{RepositoryID: sub.RepositoryID}).
+		if err := c.db.Where(models.RepositorySLA{RepositoryID: sub.RepositoryID}).
 			Assign(models.RepositorySLA{AssignCount: count}).
-			FirstOrCreate(&sla)
+			FirstOrCreate(&sla).Error; err != nil {
+			log.Printf("failed to set assign count for repo %d: %v", sub.RepositoryID, err)
+		}
 
 		var repo models.Repository
 		c.db.First(&repo, sub.RepositoryID)
@@ -745,14 +747,19 @@ func (c *VKCommandConsumer) handleSLACommand(msg *botgolang.Message, _ botgolang
 	var repoNames []string
 	for _, sub := range subs {
 		var sla models.RepositorySLA
-		c.db.Where(models.RepositorySLA{RepositoryID: sub.RepositoryID}).FirstOrCreate(&sla)
+		if err := c.db.Where(models.RepositorySLA{RepositoryID: sub.RepositoryID}).FirstOrCreate(&sla).Error; err != nil {
+			log.Printf("failed to get/create SLA for repo %d: %v", sub.RepositoryID, err)
+			continue
+		}
 
 		if slaType == "review" {
 			sla.ReviewDuration = models.Duration(duration)
 		} else {
 			sla.FixesDuration = models.Duration(duration)
 		}
-		c.db.Save(&sla)
+		if err := c.db.Save(&sla).Error; err != nil {
+			log.Printf("failed to save SLA for repo %d: %v", sub.RepositoryID, err)
+		}
 
 		var repo models.Repository
 		c.db.First(&repo, sub.RepositoryID)
