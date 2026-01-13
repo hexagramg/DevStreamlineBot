@@ -10,6 +10,7 @@ import (
 	botgolang "github.com/mail-ru-im/bot-golang"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"devstreamlinebot/models"
 	"devstreamlinebot/polling"
@@ -311,20 +312,17 @@ func (c *VKCommandConsumer) handleReviewersCommand(msg *botgolang.Message, _ bot
 		return
 	}
 	var subs []models.RepositorySubscription
-	c.db.Where("chat_id = ?", chat.ID).Find(&subs)
+	c.db.Preload("Repository").Where("chat_id = ?", chat.ID).Find(&subs)
 	if len(subs) == 0 {
 		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
 		return
 	}
 	// Gather all repository IDs and names for subscriptions
-	var repoIDs []uint
-	var repoNames []string
-	for _, s := range subs {
-		// preload Repository
-		var r models.Repository
-		c.db.First(&r, s.RepositoryID)
-		repoIDs = append(repoIDs, r.ID)
-		repoNames = append(repoNames, r.Name)
+	repoIDs := make([]uint, len(subs))
+	repoNames := make([]string, len(subs))
+	for i, s := range subs {
+		repoIDs[i] = s.Repository.ID
+		repoNames[i] = s.Repository.Name
 	}
 
 	// Parse command args
@@ -625,14 +623,14 @@ func (c *VKCommandConsumer) handleAssignCountCommand(msg *botgolang.Message, _ b
 	}
 
 	var subs []models.RepositorySubscription
-	c.db.Where("chat_id = ?", chat.ID).Find(&subs)
+	c.db.Preload("Repository").Where("chat_id = ?", chat.ID).Find(&subs)
 	if len(subs) == 0 {
 		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
 		return
 	}
 
 	// Update or create RepositorySLA for each subscribed repo
-	var repoNames []string
+	repoNames := make([]string, 0, len(subs))
 	for _, sub := range subs {
 		var sla models.RepositorySLA
 		if err := c.db.Where(models.RepositorySLA{RepositoryID: sub.RepositoryID}).
@@ -640,10 +638,7 @@ func (c *VKCommandConsumer) handleAssignCountCommand(msg *botgolang.Message, _ b
 			FirstOrCreate(&sla).Error; err != nil {
 			log.Printf("failed to set assign count for repo %d: %v", sub.RepositoryID, err)
 		}
-
-		var repo models.Repository
-		c.db.First(&repo, sub.RepositoryID)
-		repoNames = append(repoNames, repo.Name)
+		repoNames = append(repoNames, sub.Repository.Name)
 	}
 
 	c.sendReply(msg, fmt.Sprintf("Assign count set to %d for: %s", count, strings.Join(repoNames, ", ")))
@@ -664,7 +659,7 @@ func (c *VKCommandConsumer) handleHolidaysCommand(msg *botgolang.Message, _ botg
 	}
 
 	var subs []models.RepositorySubscription
-	c.db.Where("chat_id = ?", chat.ID).Find(&subs)
+	c.db.Preload("Repository").Where("chat_id = ?", chat.ID).Find(&subs)
 	if len(subs) == 0 {
 		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
 		return
@@ -739,6 +734,7 @@ func (c *VKCommandConsumer) handleHolidaysCommand(msg *botgolang.Message, _ botg
 	dateStrs := strings.Fields(argStr)
 	var added []string
 	var failed []string
+	var holidays []models.Holiday
 
 	for _, dateStr := range dateStrs {
 		date, err := time.Parse("02.01.2006", dateStr)
@@ -748,10 +744,14 @@ func (c *VKCommandConsumer) handleHolidaysCommand(msg *botgolang.Message, _ botg
 		}
 
 		for _, repoID := range repoIDs {
-			holiday := models.Holiday{RepositoryID: repoID, Date: date}
-			c.db.FirstOrCreate(&holiday, models.Holiday{RepositoryID: repoID, Date: date})
+			holidays = append(holidays, models.Holiday{RepositoryID: repoID, Date: date})
 		}
 		added = append(added, dateStr)
+	}
+
+	// Batch insert with conflict ignore (unique constraint on repo+date)
+	if len(holidays) > 0 {
+		c.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&holidays)
 	}
 
 	reply := ""
@@ -784,7 +784,7 @@ func (c *VKCommandConsumer) handleSLACommand(msg *botgolang.Message, _ botgolang
 	}
 
 	var subs []models.RepositorySubscription
-	c.db.Where("chat_id = ?", chat.ID).Find(&subs)
+	c.db.Preload("Repository").Where("chat_id = ?", chat.ID).Find(&subs)
 	if len(subs) == 0 {
 		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
 		return
@@ -796,15 +796,12 @@ func (c *VKCommandConsumer) handleSLACommand(msg *botgolang.Message, _ botgolang
 	if len(parts) < 2 {
 		var lines []string
 		for _, sub := range subs {
-			var repo models.Repository
-			c.db.First(&repo, sub.RepositoryID)
-
 			var sla models.RepositorySLA
 			if err := c.db.Where("repository_id = ?", sub.RepositoryID).First(&sla).Error; err != nil {
-				lines = append(lines, fmt.Sprintf("%s: not configured", repo.Name))
+				lines = append(lines, fmt.Sprintf("%s: not configured", sub.Repository.Name))
 			} else {
 				lines = append(lines, fmt.Sprintf("%s: review=%s, fixes=%s, assign_count=%d",
-					repo.Name,
+					sub.Repository.Name,
 					formatSLADuration(sla.ReviewDuration.ToDuration()),
 					formatSLADuration(sla.FixesDuration.ToDuration()),
 					sla.AssignCount))
@@ -871,7 +868,7 @@ func (c *VKCommandConsumer) handleLabelReviewersCommand(msg *botgolang.Message, 
 	}
 
 	var subs []models.RepositorySubscription
-	c.db.Where("chat_id = ?", chat.ID).Find(&subs)
+	c.db.Preload("Repository").Where("chat_id = ?", chat.ID).Find(&subs)
 	if len(subs) == 0 {
 		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
 		return

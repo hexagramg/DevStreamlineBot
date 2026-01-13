@@ -1224,3 +1224,124 @@ func TestSelectReviewers_LabelBased_ExcludesExistingReviewers(t *testing.T) {
 		t.Error("Expected new2 from frontend label")
 	}
 }
+
+// TestProcessReviewerRemovalNotifications_SendsDM verifies DM is sent to removed reviewer.
+func TestProcessReviewerRemovalNotifications_SendsDM(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	removedReviewer := userFactory.Create(testutils.WithEmail("removed@example.com"))
+
+	mr := mrFactory.Create(repo, author, testutils.WithMRState("opened"), testutils.WithTitle("Test MR"))
+
+	// Create unnotified reviewer removal action
+	testutils.CreateMRAction(db, mr, models.ActionReviewerRemoved, testutils.WithTargetUser(removedReviewer))
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
+	consumer.ProcessReviewerRemovalNotifications()
+
+	// Verify DM was sent
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(sentMessages))
+	}
+
+	msg := sentMessages[0]
+	if msg.ChatID != "removed@example.com" {
+		t.Errorf("Expected ChatID 'removed@example.com', got '%s'", msg.ChatID)
+	}
+	if !strings.Contains(msg.Text, "You were removed from review") {
+		t.Errorf("Expected message to contain 'You were removed from review', got '%s'", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "Test MR") {
+		t.Errorf("Expected message to contain MR title 'Test MR', got '%s'", msg.Text)
+	}
+
+	// Verify action marked as notified
+	var updatedAction models.MRAction
+	db.Where("action_type = ?", models.ActionReviewerRemoved).First(&updatedAction)
+	if !updatedAction.Notified {
+		t.Error("Action should be marked as notified")
+	}
+}
+
+// TestProcessReviewerRemovalNotifications_SkipsNoEmail verifies no DM for user without email.
+func TestProcessReviewerRemovalNotifications_SkipsNoEmail(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	removedReviewer := userFactory.Create(testutils.WithUsername("noemail"), testutils.WithEmail("")) // No email
+
+	mr := mrFactory.Create(repo, author, testutils.WithMRState("opened"))
+
+	// Create unnotified reviewer removal action
+	testutils.CreateMRAction(db, mr, models.ActionReviewerRemoved, testutils.WithTargetUser(removedReviewer))
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
+	consumer.ProcessReviewerRemovalNotifications()
+
+	// Verify no DM was sent
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages for user without email, got %d", len(sentMessages))
+	}
+
+	// Verify action still marked as notified
+	var updatedAction models.MRAction
+	db.Where("action_type = ?", models.ActionReviewerRemoved).First(&updatedAction)
+	if !updatedAction.Notified {
+		t.Error("Action should be marked as notified even without email")
+	}
+}
+
+// TestProcessReviewerRemovalNotifications_NoActions verifies no messages when no actions exist.
+func TestProcessReviewerRemovalNotifications_NoActions(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
+	consumer.ProcessReviewerRemovalNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages, got %d", len(sentMessages))
+	}
+}
+
+// TestProcessReviewerRemovalNotifications_AlreadyNotified verifies notified actions are skipped.
+func TestProcessReviewerRemovalNotifications_AlreadyNotified(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	removedReviewer := userFactory.Create(testutils.WithEmail("removed@example.com"))
+
+	mr := mrFactory.Create(repo, author, testutils.WithMRState("opened"))
+
+	// Create already notified action
+	action := testutils.CreateMRAction(db, mr, models.ActionReviewerRemoved, testutils.WithTargetUser(removedReviewer))
+	db.Model(&action).Update("notified", true)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
+	consumer.ProcessReviewerRemovalNotifications()
+
+	// Verify no DM was sent (already notified)
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages for already notified action, got %d", len(sentMessages))
+	}
+}

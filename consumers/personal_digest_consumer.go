@@ -125,17 +125,20 @@ func (c *PersonalDigestConsumer) isHolidayForAllRepos(reviewMRs, fixesMRs []util
 		return false // No pending actions, not a holiday concern
 	}
 
-	// Check holidays for each repo
-	todayStr := userTime.Format("2006-01-02")
-	for repoID := range repoIDs {
-		var count int64
-		c.db.Model(&models.Holiday{}).
-			Where("repository_id = ? AND DATE(date) = ?", repoID, todayStr).
-			Count(&count)
-		if count == 0 {
-			return false // At least one repo doesn't have today as holiday
-		}
+	// Convert map keys to slice for IN query
+	repoIDSlice := make([]uint, 0, len(repoIDs))
+	for id := range repoIDs {
+		repoIDSlice = append(repoIDSlice, id)
 	}
 
-	return true // All repos have today as holiday
+	// Single query: count how many repos have today as holiday
+	todayStr := userTime.Format("2006-01-02")
+	var holidayRepoCount int64
+	c.db.Model(&models.Holiday{}).
+		Where("repository_id IN ? AND DATE(date) = ?", repoIDSlice, todayStr).
+		Distinct("repository_id").
+		Count(&holidayRepoCount)
+
+	// All repos have holiday if count matches total
+	return holidayRepoCount == int64(len(repoIDs))
 }

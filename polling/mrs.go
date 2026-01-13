@@ -502,6 +502,25 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 			recordMRAction(db, mrModel.ID, models.ActionReviewerAssigned, nil, &u.ID, nil, now, "")
 		}
 	}
+
+	// Detect reviewer removals (reviewers that were removed from GitLab)
+	if !isNewMR {
+		var existingReviewers []models.User
+		db.Model(&existingMR).Association("Reviewers").Find(&existingReviewers)
+
+		// Build set of new reviewer GitLab IDs for O(1) lookup
+		newReviewerIDs := make(map[int]struct{})
+		for _, rv := range mr.Reviewers {
+			newReviewerIDs[rv.ID] = struct{}{}
+		}
+
+		for _, existing := range existingReviewers {
+			if _, found := newReviewerIDs[existing.GitlabID]; !found {
+				recordMRAction(db, mrModel.ID, models.ActionReviewerRemoved, nil, &existing.ID, nil, now, "")
+			}
+		}
+	}
+
 	if err := db.Model(&mrModel).Association("Reviewers").Replace(reviewersToAssociate); err != nil {
 		log.Printf("Error replacing reviewers for MR GitlabID %d: %v", mrModel.GitlabID, err)
 		return 0, fmt.Errorf("replacing reviewers for MR GitlabID %d: %w", mrModel.GitlabID, err)

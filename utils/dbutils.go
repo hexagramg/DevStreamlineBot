@@ -71,15 +71,47 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 		return nil, err
 	}
 
+	if len(mrs) == 0 {
+		return nil, nil
+	}
+
+	// Batch fetch SLAs for all unique repos
+	slaMap := make(map[uint]*models.RepositorySLA)
+	var slas []models.RepositorySLA
+	db.Where("repository_id IN ?", repoIDs).Find(&slas)
+	for i := range slas {
+		slaMap[slas[i].RepositoryID] = &slas[i]
+	}
+
+	// Batch fetch block labels for all repos
+	var blockLabels []models.BlockLabel
+	db.Where("repository_id IN ?", repoIDs).Find(&blockLabels)
+	blockLabelMap := make(map[uint]map[string]struct{})
+	for _, bl := range blockLabels {
+		if blockLabelMap[bl.RepositoryID] == nil {
+			blockLabelMap[bl.RepositoryID] = make(map[string]struct{})
+		}
+		blockLabelMap[bl.RepositoryID][bl.LabelName] = struct{}{}
+	}
+
 	var digestMRs []DigestMR
 	for _, mr := range mrs {
 		stateInfo := GetStateInfo(db, &mr)
 
-		// Check if MR is currently blocked
-		blocked := IsMRBlocked(db, &mr)
+		// Check if MR is blocked using pre-fetched block labels
+		blocked := isMRBlockedFromCache(mr.Labels, blockLabelMap[mr.RepositoryID])
 
-		// Get SLA thresholds
-		sla, _ := GetRepositorySLA(db, mr.RepositoryID)
+		// Get SLA from pre-fetched map, or use defaults
+		sla := slaMap[mr.RepositoryID]
+		if sla == nil {
+			sla = &models.RepositorySLA{
+				RepositoryID:   mr.RepositoryID,
+				ReviewDuration: DefaultSLADuration,
+				FixesDuration:  DefaultSLADuration,
+				AssignCount:    1,
+			}
+		}
+
 		var threshold time.Duration
 		if stateInfo.State == StateOnReview {
 			threshold = sla.ReviewDuration.ToDuration()
@@ -101,6 +133,19 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 	}
 
 	return digestMRs, nil
+}
+
+// isMRBlockedFromCache checks if MR has block labels using pre-fetched cache.
+func isMRBlockedFromCache(labels []models.Label, blockLabels map[string]struct{}) bool {
+	if len(labels) == 0 || len(blockLabels) == 0 {
+		return false
+	}
+	for _, l := range labels {
+		if _, ok := blockLabels[l.Name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // FindUserActionMRs returns MRs requiring action from a specific user.

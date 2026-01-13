@@ -25,18 +25,82 @@ func GetUserMention(db *gorm.DB, user *models.User) string {
 	return user.Username
 }
 
+// BatchGetUserMentions returns mention strings for multiple users with a single DB query.
+// Returns a map from user ID to mention string.
+func BatchGetUserMentions(db *gorm.DB, users []models.User) map[uint]string {
+	result := make(map[uint]string)
+	if len(users) == 0 {
+		return result
+	}
+
+	var usernamesToLookup []string
+	usernameToUserID := make(map[string]uint)
+
+	for _, u := range users {
+		if u.Email != "" {
+			result[u.ID] = u.Email
+		} else {
+			usernamesToLookup = append(usernamesToLookup, u.Username)
+			usernameToUserID[u.Username] = u.ID
+		}
+	}
+
+	if len(usernamesToLookup) == 0 {
+		return result
+	}
+
+	// Batch query VK users
+	var vkUsers []models.VKUser
+	query := db
+	for i, username := range usernamesToLookup {
+		if i == 0 {
+			query = query.Where("user_id LIKE ?", username+"%")
+		} else {
+			query = query.Or("user_id LIKE ?", username+"%")
+		}
+	}
+	query.Find(&vkUsers)
+
+	// Build set of usernames for O(1) lookup
+	usernameSet := make(map[string]struct{})
+	for _, username := range usernamesToLookup {
+		usernameSet[username] = struct{}{}
+	}
+
+	// Map VK users by extracting username prefix
+	vkMap := make(map[string]string)
+	for _, vk := range vkUsers {
+		username := vk.UserID
+		if idx := strings.Index(vk.UserID, "@"); idx > 0 {
+			username = vk.UserID[:idx]
+		}
+		if _, ok := usernameSet[username]; ok {
+			vkMap[username] = vk.UserID
+		}
+	}
+
+	// Fill results for users without email
+	for _, u := range users {
+		if u.Email == "" {
+			if vkID, ok := vkMap[u.Username]; ok {
+				result[u.ID] = vkID
+			} else {
+				result[u.ID] = u.Username
+			}
+		}
+	}
+
+	return result
+}
+
 // SanitizeTitle removes newlines and other problematic characters from a title
 func SanitizeTitle(title string) string {
 	// Replace newlines with spaces
 	title = strings.ReplaceAll(title, "\n", " ")
 	title = strings.ReplaceAll(title, "\r", " ")
 
-	// Remove any consecutive spaces
-	for strings.Contains(title, "  ") {
-		title = strings.ReplaceAll(title, "  ", " ")
-	}
-
-	return strings.TrimSpace(title)
+	// Remove consecutive spaces using O(n) approach
+	return strings.Join(strings.Fields(title), " ")
 }
 
 // BuildReviewDigest builds a digest message for a slice of merge requests.
@@ -44,13 +108,24 @@ func BuildReviewDigest(db *gorm.DB, mrs []models.MergeRequest) string {
 	if len(mrs) == 0 {
 		return "No pending reviews found."
 	}
+
+	// Collect all users for batch mention lookup
+	var allUsers []models.User
+	for _, mr := range mrs {
+		allUsers = append(allUsers, mr.Author)
+		if len(mr.Reviewers) > 0 {
+			allUsers = append(allUsers, mr.Reviewers[0])
+		}
+	}
+	mentionMap := BatchGetUserMentions(db, allUsers)
+
 	var sb strings.Builder
 	sb.WriteString("REVIEW DIGEST:")
 	for _, mr := range mrs {
-		authorMention := GetUserMention(db, &mr.Author)
+		authorMention := mentionMap[mr.Author.ID]
 		reviewerMention := ""
 		if len(mr.Reviewers) > 0 {
-			reviewerMention = GetUserMention(db, &mr.Reviewers[0])
+			reviewerMention = mentionMap[mr.Reviewers[0].ID]
 		}
 		sanitizedTitle := SanitizeTitle(mr.Title)
 		sb.WriteString(
@@ -68,6 +143,14 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 	if len(digestMRs) == 0 {
 		return "No pending reviews found."
 	}
+
+	// Collect all users for batch mention lookup
+	var allUsers []models.User
+	for _, dmr := range digestMRs {
+		allUsers = append(allUsers, dmr.MR.Author)
+		allUsers = append(allUsers, dmr.MR.Reviewers...)
+	}
+	mentionMap := BatchGetUserMentions(db, allUsers)
 
 	var pendingReview []DigestMR
 	var pendingFixes []DigestMR
@@ -95,7 +178,7 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 	if len(pendingReview) > 0 {
 		sb.WriteString("PENDING REVIEW:\n")
 		for _, dmr := range pendingReview {
-			writeDigestEntry(db, &sb, &dmr)
+			writeDigestEntry(&sb, &dmr, mentionMap)
 		}
 	}
 
@@ -106,7 +189,7 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 		}
 		sb.WriteString("PENDING FIXES:\n")
 		for _, dmr := range pendingFixes {
-			writeDigestEntry(db, &sb, &dmr)
+			writeDigestEntry(&sb, &dmr, mentionMap)
 		}
 	}
 
@@ -118,14 +201,14 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 }
 
 // writeDigestEntry writes a single MR entry to the digest.
-func writeDigestEntry(db *gorm.DB, sb *strings.Builder, dmr *DigestMR) {
+func writeDigestEntry(sb *strings.Builder, dmr *DigestMR, mentionMap map[uint]string) {
 	mr := &dmr.MR
-	authorMention := GetUserMention(db, &mr.Author)
+	authorMention := mentionMap[mr.Author.ID]
 
 	// Build reviewer mentions
-	var reviewerMentions []string
+	reviewerMentions := make([]string, 0, len(mr.Reviewers))
 	for _, r := range mr.Reviewers {
-		reviewerMentions = append(reviewerMentions, "@["+GetUserMention(db, &r)+"]")
+		reviewerMentions = append(reviewerMentions, "@["+mentionMap[r.ID]+"]")
 	}
 	reviewerStr := strings.Join(reviewerMentions, ", ")
 	if reviewerStr == "" {
@@ -182,6 +265,18 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs []DigestMR, usernam
 		return fmt.Sprintf("No pending actions for %s.", username)
 	}
 
+	// Collect all users for batch mention lookup
+	var allUsers []models.User
+	for _, dmr := range reviewMRs {
+		allUsers = append(allUsers, dmr.MR.Author)
+		allUsers = append(allUsers, dmr.MR.Reviewers...)
+	}
+	for _, dmr := range fixesMRs {
+		allUsers = append(allUsers, dmr.MR.Author)
+		allUsers = append(allUsers, dmr.MR.Reviewers...)
+	}
+	mentionMap := BatchGetUserMentions(db, allUsers)
+
 	// Sort by SLA percentage descending (most urgent first)
 	sort.Slice(reviewMRs, func(i, j int) bool {
 		return reviewMRs[i].SLAPercentage > reviewMRs[j].SLAPercentage
@@ -197,7 +292,7 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs []DigestMR, usernam
 	if len(reviewMRs) > 0 {
 		sb.WriteString("\nPENDING REVIEW:\n")
 		for _, dmr := range reviewMRs {
-			writeDigestEntry(db, &sb, &dmr)
+			writeDigestEntry(&sb, &dmr, mentionMap)
 		}
 	}
 
@@ -205,7 +300,7 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs []DigestMR, usernam
 	if len(fixesMRs) > 0 {
 		sb.WriteString("\nPENDING FIXES:\n")
 		for _, dmr := range fixesMRs {
-			writeDigestEntry(db, &sb, &dmr)
+			writeDigestEntry(&sb, &dmr, mentionMap)
 		}
 	}
 

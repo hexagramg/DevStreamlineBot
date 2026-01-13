@@ -70,6 +70,7 @@ func (c *MRReviewerConsumer) StartConsumer() {
 		for range ticker.C {
 			c.AssignReviewers()
 			c.ProcessStateChangeNotifications()
+			c.ProcessReviewerRemovalNotifications()
 		}
 	}()
 }
@@ -491,13 +492,21 @@ func (c *MRReviewerConsumer) formatReviewerMentions(reviewers []models.User) str
 		}
 		query.Find(&vkUsers)
 
-		// Map VKUsers by matching username prefix
+		// Build set of usernames for O(1) lookup
+		usernameSet := make(map[string]struct{})
+		for _, username := range usernamesToLookup {
+			usernameSet[username] = struct{}{}
+		}
+
+		// Map VKUsers by extracting username prefix
 		for _, vk := range vkUsers {
-			for _, username := range usernamesToLookup {
-				if strings.HasPrefix(vk.UserID, username) {
-					vkUserMap[username] = vk.UserID
-					break
-				}
+			// VK UserID format is "username@domain" - extract username part
+			username := vk.UserID
+			if idx := strings.Index(vk.UserID, "@"); idx > 0 {
+				username = vk.UserID[:idx]
+			}
+			if _, ok := usernameSet[username]; ok {
+				vkUserMap[username] = vk.UserID
 			}
 		}
 	}
@@ -664,6 +673,37 @@ func (c *MRReviewerConsumer) notifyUserDM(userEmail, text string) {
 	msg := c.vkBot.NewTextMessage(userEmail, text)
 	if err := msg.Send(); err != nil {
 		log.Printf("DM to %s failed (user may not have messaged bot): %v", userEmail, err)
+	}
+}
+
+// ProcessReviewerRemovalNotifications sends DMs to reviewers who were removed from MRs.
+// Called periodically from the main consumer loop.
+func (c *MRReviewerConsumer) ProcessReviewerRemovalNotifications() {
+	var actions []models.MRAction
+	err := c.db.
+		Preload("MergeRequest").
+		Preload("TargetUser").
+		Where("notified = ? AND action_type = ?", false, models.ActionReviewerRemoved).
+		Order("timestamp ASC").
+		Limit(100).
+		Find(&actions).Error
+	if err != nil {
+		log.Printf("failed to fetch unnotified reviewer removal actions: %v", err)
+		return
+	}
+
+	for _, action := range actions {
+		if action.TargetUser == nil || action.TargetUser.Email == "" {
+			c.markActionNotified(action.ID)
+			continue
+		}
+
+		c.notifyUserDM(action.TargetUser.Email, fmt.Sprintf(
+			"You were removed from review:\n%s\n%s",
+			action.MergeRequest.Title,
+			action.MergeRequest.WebURL,
+		))
+		c.markActionNotified(action.ID)
 	}
 }
 

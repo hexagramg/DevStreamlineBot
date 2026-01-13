@@ -312,6 +312,7 @@ type MRActionType string
 
 const (
 	ActionReviewerAssigned  MRActionType = "reviewer_assigned"
+	ActionReviewerRemoved   MRActionType = "reviewer_removed"
 	ActionCommentAdded      MRActionType = "comment_added"
 	ActionCommentResolved   MRActionType = "comment_resolved"
 	ActionApproved          MRActionType = "approved"
