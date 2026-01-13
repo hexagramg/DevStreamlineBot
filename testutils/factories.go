@@ -327,6 +327,11 @@ func WithMetadata(metadata string) ActionOption {
 	return func(a *models.MRAction) { a.Metadata = metadata }
 }
 
+// WithCommentID sets the comment ID for the action.
+func WithCommentID(commentID uint) ActionOption {
+	return func(a *models.MRAction) { a.CommentID = &commentID }
+}
+
 // CreateMRAction creates an MR action.
 func CreateMRAction(db *gorm.DB, mr models.MergeRequest, actionType models.MRActionType, opts ...ActionOption) models.MRAction {
 	action := models.MRAction{

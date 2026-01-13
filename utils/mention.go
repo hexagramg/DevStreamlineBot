@@ -164,3 +164,42 @@ func formatSLAFromDigest(dmr *DigestMR) string {
 	}
 	return fmt.Sprintf("%.0f%%", dmr.SLAPercentage)
 }
+
+// BuildUserActionsDigest builds a digest of actions required from a specific user.
+// Shows two sections:
+// - PENDING REVIEW: MRs where user needs to review
+// - PENDING FIXES: MRs where user (as author) needs to address comments
+func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs []DigestMR, username string) string {
+	if len(reviewMRs) == 0 && len(fixesMRs) == 0 {
+		return fmt.Sprintf("No pending actions for %s.", username)
+	}
+
+	// Sort by SLA percentage descending (most urgent first)
+	sort.Slice(reviewMRs, func(i, j int) bool {
+		return reviewMRs[i].SLAPercentage > reviewMRs[j].SLAPercentage
+	})
+	sort.Slice(fixesMRs, func(i, j int) bool {
+		return fixesMRs[i].SLAPercentage > fixesMRs[j].SLAPercentage
+	})
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("ACTIONS FOR %s:\n", username))
+
+	// Section 1: Pending Review (user needs to review these)
+	if len(reviewMRs) > 0 {
+		sb.WriteString("\nPENDING REVIEW:\n")
+		for _, dmr := range reviewMRs {
+			writeDigestEntry(db, &sb, &dmr)
+		}
+	}
+
+	// Section 2: Pending Fixes (user needs to fix these as author)
+	if len(fixesMRs) > 0 {
+		sb.WriteString("\nPENDING FIXES:\n")
+		for _, dmr := range fixesMRs {
+			writeDigestEntry(db, &sb, &dmr)
+		}
+	}
+
+	return sb.String()
+}

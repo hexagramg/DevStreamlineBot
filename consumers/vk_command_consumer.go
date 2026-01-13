@@ -53,8 +53,8 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleLabelReviewersCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/reviewers") {
 		c.handleReviewersCommand(msg, from)
-	} else if strings.HasPrefix(msg.Text, "/reviews") {
-		c.handleReviewsCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/actions") {
+		c.handleActionsCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/send_digest") {
 		c.handleSendDigestCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/get_mr_info") {
@@ -303,8 +303,9 @@ func (c *VKCommandConsumer) handleReviewersCommand(msg *botgolang.Message, _ bot
 	c.sendReply(msg, replyText)
 }
 
-// handleReviewsCommand processes the /reviews command to list merge requests where a user is a reviewer.
-func (c *VKCommandConsumer) handleReviewsCommand(msg *botgolang.Message, from botgolang.Contact) {
+// handleActionsCommand processes the /actions command to list MRs requiring action from a user.
+// Shows two sections: PENDING REVIEW (as reviewer) and PENDING FIXES (as author).
+func (c *VKCommandConsumer) handleActionsCommand(msg *botgolang.Message, from botgolang.Contact) {
 	parts := strings.Fields(msg.Text)
 	var username string
 	if len(parts) < 2 {
@@ -312,13 +313,13 @@ func (c *VKCommandConsumer) handleReviewsCommand(msg *botgolang.Message, from bo
 		vkID := fmt.Sprint(from.ID)
 		var vkUser models.VKUser
 		if err := c.db.Where("user_id = ?", vkID).First(&vkUser).Error; err != nil {
-			c.sendReply(msg, "Cannot determine your account. Please specify a GitLab username: /reviews <username>")
+			c.sendReply(msg, "Cannot determine your account. Please specify a GitLab username: /actions <username>")
 			return
 		}
 		// Find GitLab user by email matching VKUser.UserID
 		var user models.User
 		if err := c.db.Where("email = ?", vkUser.UserID).First(&user).Error; err != nil {
-			c.sendReply(msg, "No linked GitLab user found for your VK account. Please specify a username: /reviews <username>")
+			c.sendReply(msg, "No linked GitLab user found for your VK account. Please specify a username: /actions <username>")
 			return
 		}
 		username = user.Username
@@ -333,33 +334,19 @@ func (c *VKCommandConsumer) handleReviewsCommand(msg *botgolang.Message, from bo
 		return
 	}
 
-	// Find open merge requests where this user is a reviewer and has not approved
-	var mrs []models.MergeRequest
-	if err := c.db.
-		Preload("Author").
-		Where("merge_requests.state = ? AND merge_requests.merged_at IS NULL", "opened").
-		Where("EXISTS (SELECT 1 FROM merge_request_reviewers mrr WHERE mrr.merge_request_id = merge_requests.id AND mrr.user_id = ?)", user.ID).
-		Where("NOT EXISTS (SELECT 1 FROM merge_request_approvers mra WHERE mra.merge_request_id = merge_requests.id AND mra.user_id = ?)", user.ID).
-		Find(&mrs).Error; err != nil {
-		log.Printf("failed to fetch merge requests for reviewer %s: %v", username, err)
-		c.sendReply(msg, "Failed to fetch reviews. Please try again later.")
-		return
-	}
-	if len(mrs) == 0 {
-		c.sendReply(msg, fmt.Sprintf("No pending reviews for user %s", username))
+	// Find MRs requiring action from this user
+	reviewMRs, fixesMRs, err := utils.FindUserActionMRs(c.db, user.ID)
+	if err != nil {
+		log.Printf("failed to fetch actions for user %s: %v", username, err)
+		c.sendReply(msg, "Failed to fetch actions. Please try again later.")
 		return
 	}
 
-	// Build digest message
-	text := fmt.Sprintf("REVIEWS FOR %s:\n", username)
-	for _, mr := range mrs {
-		text += fmt.Sprintf("- %s\n  %s\n  author: @[%s]\n", mr.Title, mr.WebURL, mr.Author.Username)
-	}
-
-	// Send reply
+	// Build and send digest
+	text := utils.BuildUserActionsDigest(c.db, reviewMRs, fixesMRs, username)
 	replyMsg := c.vkBot.NewTextMessage(fmt.Sprint(msg.Chat.ID), text)
 	if err := replyMsg.Send(); err != nil {
-		log.Printf("failed to send reviews digest: %v", err)
+		log.Printf("failed to send actions digest: %v", err)
 	}
 }
 

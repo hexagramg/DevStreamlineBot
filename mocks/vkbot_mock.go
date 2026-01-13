@@ -1,5 +1,7 @@
 package mocks
 
+import "devstreamlinebot/interfaces"
+
 // MockVKMessage represents a mock VK Teams message.
 type MockVKMessage struct {
 	ChatID  string
@@ -15,9 +17,13 @@ func (m *MockVKMessage) Send() error {
 }
 
 // MockVKBot is a mock implementation of VK Teams bot.
+// Implements interfaces.VKBot.
 type MockVKBot struct {
 	Messages []*MockVKMessage
 }
+
+// Ensure MockVKBot implements interfaces.VKBot.
+var _ interfaces.VKBot = (*MockVKBot)(nil)
 
 // NewMockVKBot creates a new MockVKBot.
 func NewMockVKBot() *MockVKBot {
@@ -27,7 +33,8 @@ func NewMockVKBot() *MockVKBot {
 }
 
 // NewTextMessage creates a mock text message and tracks it.
-func (m *MockVKBot) NewTextMessage(chatID string, text string) *MockVKMessage {
+// Returns interfaces.VKBotMessage to satisfy the interface.
+func (m *MockVKBot) NewTextMessage(chatID string, text string) interfaces.VKBotMessage {
 	msg := &MockVKMessage{
 		ChatID: chatID,
 		Text:   text,

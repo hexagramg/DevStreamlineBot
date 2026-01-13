@@ -173,6 +173,9 @@ type MergeRequest struct {
 	// Last local sync time
 	LastUpdate *time.Time `gorm:"index"`
 
+	// Last state for which DM notification was sent (for state change notifications)
+	LastNotifiedState string `gorm:"type:varchar(20)"`
+
 	// Nested data normalized
 	Labels     []Label         `gorm:"many2many:merge_request_labels"`
 	References IssueReferences `gorm:"embedded;embeddedPrefix:references_"`
@@ -324,6 +327,7 @@ type MRAction struct {
 	Comment        *MRComment   `gorm:"constraint:OnDelete:SET NULL;"`
 	Timestamp      time.Time    `gorm:"not null;index"`
 	Metadata       string       `gorm:"type:text"` // JSON for additional context (e.g., draft state)
+	Notified       bool         `gorm:"default:false;index"` // Whether DM notification was sent for this action
 }
 
 // MRComment tracks discussion comments with resolved state.

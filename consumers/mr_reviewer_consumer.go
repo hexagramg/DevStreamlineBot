@@ -12,6 +12,7 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"gorm.io/gorm"
 
+	"devstreamlinebot/interfaces"
 	"devstreamlinebot/models"
 	"devstreamlinebot/utils"
 )
@@ -19,7 +20,7 @@ import (
 // MRReviewerConsumer periodically assigns reviewers to new merge requests and notifies chats.
 type MRReviewerConsumer struct {
 	db        *gorm.DB
-	vkBot     *botgolang.Bot
+	vkBot     interfaces.VKBot
 	glClient  *gitlab.Client
 	interval  time.Duration
 	startTime time.Time
@@ -27,6 +28,21 @@ type MRReviewerConsumer struct {
 
 // NewMRReviewerConsumer initializes a new MRReviewerConsumer.
 func NewMRReviewerConsumer(db *gorm.DB, vkBot *botgolang.Bot, glClient *gitlab.Client, interval time.Duration) *MRReviewerConsumer {
+	var bot interfaces.VKBot
+	if vkBot != nil {
+		bot = &interfaces.RealVKBot{Bot: vkBot}
+	}
+	return &MRReviewerConsumer{
+		db:        db,
+		vkBot:     bot,
+		glClient:  glClient,
+		interval:  interval,
+		startTime: time.Now().AddDate(0, 0, -2),
+	}
+}
+
+// NewMRReviewerConsumerWithBot initializes a consumer with a custom VKBot (for testing).
+func NewMRReviewerConsumerWithBot(db *gorm.DB, vkBot interfaces.VKBot, glClient *gitlab.Client, interval time.Duration) *MRReviewerConsumer {
 	return &MRReviewerConsumer{
 		db:        db,
 		vkBot:     vkBot,
@@ -36,13 +52,14 @@ func NewMRReviewerConsumer(db *gorm.DB, vkBot *botgolang.Bot, glClient *gitlab.C
 	}
 }
 
-// Start begins the polling loop for assigning reviewers.
+// Start begins the polling loop for assigning reviewers and processing notifications.
 func (c *MRReviewerConsumer) StartConsumer() {
 	ticker := time.NewTicker(c.interval)
 	go func() {
 		defer ticker.Stop()
 		for range ticker.C {
 			c.AssignReviewers()
+			c.ProcessStateChangeNotifications()
 		}
 	}()
 }
@@ -577,6 +594,113 @@ func (c *MRReviewerConsumer) AssignReviewers() {
 			log.Printf("failed to mark MR reviewers: %v", err)
 		}
 
+		// Send DM to each assigned reviewer
+		for _, reviewer := range reviewers {
+			c.notifyUserDM(reviewer.Email, fmt.Sprintf(
+				"🔍 New MR for review:\n%s\n%s",
+				mr.Title,
+				mr.WebURL,
+			))
+		}
+
 		log.Printf("Assigned %d reviewer(s) to MR %d: %v", len(reviewers), mr.ID, reviewerIDs)
+	}
+}
+
+// notifyUserDM attempts to send a direct message to a user.
+// Logs a warning if the message fails (e.g., user hasn't messaged the bot before).
+func (c *MRReviewerConsumer) notifyUserDM(userEmail, text string) {
+	if userEmail == "" {
+		return
+	}
+	msg := c.vkBot.NewTextMessage(userEmail, text)
+	if err := msg.Send(); err != nil {
+		log.Printf("DM to %s failed (user may not have messaged bot): %v", userEmail, err)
+	}
+}
+
+// ProcessStateChangeNotifications checks for state changes and sends DMs only on actual transitions.
+// Called periodically from the main consumer loop.
+func (c *MRReviewerConsumer) ProcessStateChangeNotifications() {
+	// Find unnotified comment actions that may indicate state changes
+	var actions []models.MRAction
+	err := c.db.
+		Preload("MergeRequest").
+		Preload("MergeRequest.Author").
+		Preload("MergeRequest.Reviewers").
+		Where("notified = ? AND action_type IN ?", false, []models.MRActionType{
+			models.ActionCommentAdded,
+			models.ActionCommentResolved,
+		}).
+		Order("timestamp ASC").
+		Limit(100).
+		Find(&actions).Error
+	if err != nil {
+		log.Printf("failed to fetch unnotified actions: %v", err)
+		return
+	}
+
+	// Group actions by MR ID
+	mrActions := make(map[uint][]models.MRAction)
+	for _, action := range actions {
+		mrActions[action.MergeRequestID] = append(mrActions[action.MergeRequestID], action)
+	}
+
+	// Process each MR's actions
+	for _, actionList := range mrActions {
+		mr := actionList[0].MergeRequest
+
+		// Skip if MR is not in an active state
+		if mr.State != "opened" {
+			for _, action := range actionList {
+				c.markActionNotified(action.ID)
+			}
+			continue
+		}
+
+		// Get current derived state
+		currentState := string(utils.GetStateInfo(c.db, &mr).State)
+
+		// Only notify if state actually changed from last notified state
+		if currentState != mr.LastNotifiedState {
+			switch utils.MRState(currentState) {
+			case utils.StateOnFixes:
+				// Notify author that MR needs fixes
+				c.notifyUserDM(mr.Author.Email, fmt.Sprintf(
+					"🔧 Your MR needs fixes:\n%s\n%s\nReviewer left comments",
+					mr.Title,
+					mr.WebURL,
+				))
+
+			case utils.StateOnReview:
+				// Only notify reviewers if transitioning FROM on_fixes (not initial assignment)
+				if mr.LastNotifiedState == string(utils.StateOnFixes) {
+					for _, reviewer := range mr.Reviewers {
+						c.notifyUserDM(reviewer.Email, fmt.Sprintf(
+							"✅ MR ready for re-review:\n%s\n%s\nAuthor addressed comments",
+							mr.Title,
+							mr.WebURL,
+						))
+					}
+				}
+			}
+
+			// Update last notified state
+			if err := c.db.Model(&mr).Update("last_notified_state", currentState).Error; err != nil {
+				log.Printf("failed to update last_notified_state for MR %d: %v", mr.ID, err)
+			}
+		}
+
+		// Mark all actions for this MR as notified
+		for _, action := range actionList {
+			c.markActionNotified(action.ID)
+		}
+	}
+}
+
+// markActionNotified marks an action as having been processed for notifications.
+func (c *MRReviewerConsumer) markActionNotified(actionID uint) {
+	if err := c.db.Model(&models.MRAction{}).Where("id = ?", actionID).Update("notified", true).Error; err != nil {
+		log.Printf("failed to mark action %d as notified: %v", actionID, err)
 	}
 }

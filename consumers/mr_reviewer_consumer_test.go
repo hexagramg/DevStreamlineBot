@@ -1,9 +1,11 @@
 package consumers
 
 import (
+	"strings"
 	"testing"
 	"time"
 
+	"devstreamlinebot/mocks"
 	"devstreamlinebot/models"
 	"devstreamlinebot/testutils"
 )
@@ -689,5 +691,391 @@ func TestGetAssignCount_DefaultsToOne(t *testing.T) {
 
 	if count != 1 {
 		t.Errorf("Expected default assign count 1, got %d", count)
+	}
+}
+
+// ============================================================================
+// State Change Notification Tests
+// ============================================================================
+
+// TestProcessStateChangeNotifications_NoActions verifies no messages sent when no unnotified actions exist.
+func TestProcessStateChangeNotifications_NoActions(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer.ProcessStateChangeNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages, got %d", len(sentMessages))
+	}
+}
+
+// TestProcessStateChangeNotifications_ClosedMR verifies actions on closed MRs are marked notified without sending messages.
+func TestProcessStateChangeNotifications_ClosedMR(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer := userFactory.Create(testutils.WithEmail("reviewer@example.com"))
+
+	mr := mrFactory.Create(repo, author, testutils.WithMRState("closed"))
+	testutils.AssignReviewers(db, &mr, reviewer)
+
+	// Create unnotified action
+	action := testutils.CreateMRAction(db, mr, models.ActionCommentAdded, testutils.WithActor(reviewer))
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer.ProcessStateChangeNotifications()
+
+	// Verify no messages sent
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages for closed MR, got %d", len(sentMessages))
+	}
+
+	// Verify action marked as notified
+	var updatedAction models.MRAction
+	db.First(&updatedAction, action.ID)
+	if !updatedAction.Notified {
+		t.Error("Action should be marked as notified")
+	}
+}
+
+// TestStateChange_OnReviewToOnFixes verifies author is notified when MR transitions to on_fixes.
+func TestStateChange_OnReviewToOnFixes(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer := userFactory.Create(testutils.WithEmail("reviewer@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+
+	// Create unresolved resolvable comment (triggers on_fixes state)
+	comment := testutils.CreateMRComment(db, mr, reviewer, 123, testutils.WithResolvable())
+
+	// Create unnotified action for the comment
+	testutils.CreateMRAction(db, mr, models.ActionCommentAdded,
+		testutils.WithActor(reviewer),
+		testutils.WithCommentID(comment.ID),
+	)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer.ProcessStateChangeNotifications()
+
+	// Verify author received notification
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(sentMessages))
+	}
+	if sentMessages[0].ChatID != "author@example.com" {
+		t.Errorf("Expected message to author@example.com, got %s", sentMessages[0].ChatID)
+	}
+	if !strings.Contains(sentMessages[0].Text, "🔧") {
+		t.Error("Expected fixes notification with 🔧 emoji")
+	}
+
+	// Verify LastNotifiedState updated
+	var updatedMR models.MergeRequest
+	db.First(&updatedMR, mr.ID)
+	if updatedMR.LastNotifiedState != "on_fixes" {
+		t.Errorf("Expected LastNotifiedState='on_fixes', got '%s'", updatedMR.LastNotifiedState)
+	}
+}
+
+// TestStateChange_OnFixesToOnReview verifies reviewers are notified when MR transitions back to on_review.
+func TestStateChange_OnFixesToOnReview(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer := userFactory.Create(testutils.WithEmail("reviewer@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+
+	// Set LastNotifiedState to on_fixes (simulating previous notification)
+	db.Model(&mr).Update("last_notified_state", "on_fixes")
+
+	// Create RESOLVED comment (MR is now on_review)
+	comment := testutils.CreateMRComment(db, mr, reviewer, 123,
+		testutils.WithResolvable(),
+		testutils.WithResolved(&author),
+	)
+
+	// Create unnotified action for comment resolution
+	testutils.CreateMRAction(db, mr, models.ActionCommentResolved,
+		testutils.WithActor(author),
+		testutils.WithCommentID(comment.ID),
+	)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer.ProcessStateChangeNotifications()
+
+	// Verify reviewer received notification
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(sentMessages))
+	}
+	if sentMessages[0].ChatID != "reviewer@example.com" {
+		t.Errorf("Expected message to reviewer@example.com, got %s", sentMessages[0].ChatID)
+	}
+	if !strings.Contains(sentMessages[0].Text, "✅") {
+		t.Error("Expected re-review notification with ✅ emoji")
+	}
+
+	// Verify LastNotifiedState updated
+	var updatedMR models.MergeRequest
+	db.First(&updatedMR, mr.ID)
+	if updatedMR.LastNotifiedState != "on_review" {
+		t.Errorf("Expected LastNotifiedState='on_review', got '%s'", updatedMR.LastNotifiedState)
+	}
+}
+
+// TestNoNotification_AlreadyOnFixes verifies no duplicate notification when already in on_fixes state.
+func TestNoNotification_AlreadyOnFixes(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer := userFactory.Create(testutils.WithEmail("reviewer@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+
+	// Set LastNotifiedState to on_fixes (already notified)
+	db.Model(&mr).Update("last_notified_state", "on_fixes")
+
+	// Create unresolved comment (still on_fixes)
+	comment := testutils.CreateMRComment(db, mr, reviewer, 123, testutils.WithResolvable())
+
+	// Create unnotified action
+	action := testutils.CreateMRAction(db, mr, models.ActionCommentAdded,
+		testutils.WithActor(reviewer),
+		testutils.WithCommentID(comment.ID),
+	)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer.ProcessStateChangeNotifications()
+
+	// Verify NO messages sent (already in on_fixes, no state change)
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages (no state change), got %d", len(sentMessages))
+	}
+
+	// Verify action still marked as notified
+	var updatedAction models.MRAction
+	db.First(&updatedAction, action.ID)
+	if !updatedAction.Notified {
+		t.Error("Action should be marked as notified even without message")
+	}
+}
+
+// TestNoNotification_AlreadyOnReview verifies no duplicate notification when already in on_review state.
+func TestNoNotification_AlreadyOnReview(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer := userFactory.Create(testutils.WithEmail("reviewer@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+
+	// Set LastNotifiedState to on_review (already notified)
+	db.Model(&mr).Update("last_notified_state", "on_review")
+
+	// No unresolved comments, so MR is on_review
+	// Create a resolved comment action
+	comment := testutils.CreateMRComment(db, mr, reviewer, 123,
+		testutils.WithResolvable(),
+		testutils.WithResolved(&author),
+	)
+
+	action := testutils.CreateMRAction(db, mr, models.ActionCommentResolved,
+		testutils.WithActor(author),
+		testutils.WithCommentID(comment.ID),
+	)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer.ProcessStateChangeNotifications()
+
+	// Verify NO messages sent (already in on_review, no state change)
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages (no state change), got %d", len(sentMessages))
+	}
+
+	// Verify action marked as notified
+	var updatedAction models.MRAction
+	db.First(&updatedAction, action.ID)
+	if !updatedAction.Notified {
+		t.Error("Action should be marked as notified")
+	}
+}
+
+// TestMultipleReviewers_AllNotified verifies all reviewers receive notification on re-review.
+func TestMultipleReviewers_AllNotified(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer1 := userFactory.Create(testutils.WithEmail("reviewer1@example.com"))
+	reviewer2 := userFactory.Create(testutils.WithEmail("reviewer2@example.com"))
+	reviewer3 := userFactory.Create(testutils.WithEmail("reviewer3@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2, reviewer3)
+
+	// Set LastNotifiedState to on_fixes
+	db.Model(&mr).Update("last_notified_state", "on_fixes")
+
+	// Create resolved comment (MR is now on_review)
+	comment := testutils.CreateMRComment(db, mr, reviewer1, 123,
+		testutils.WithResolvable(),
+		testutils.WithResolved(&author),
+	)
+
+	testutils.CreateMRAction(db, mr, models.ActionCommentResolved,
+		testutils.WithActor(author),
+		testutils.WithCommentID(comment.ID),
+	)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer.ProcessStateChangeNotifications()
+
+	// Verify all 3 reviewers received notifications
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 3 {
+		t.Fatalf("Expected 3 messages (one per reviewer), got %d", len(sentMessages))
+	}
+
+	// Verify each reviewer got a message
+	emails := make(map[string]bool)
+	for _, msg := range sentMessages {
+		emails[msg.ChatID] = true
+	}
+	for _, email := range []string{"reviewer1@example.com", "reviewer2@example.com", "reviewer3@example.com"} {
+		if !emails[email] {
+			t.Errorf("Expected message to %s", email)
+		}
+	}
+}
+
+// TestBatchProcessing_MultipleMRs verifies multiple MRs are processed correctly in a single call.
+func TestBatchProcessing_MultipleMRs(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author1 := userFactory.Create(testutils.WithEmail("author1@example.com"))
+	author2 := userFactory.Create(testutils.WithEmail("author2@example.com"))
+	reviewer := userFactory.Create(testutils.WithEmail("reviewer@example.com"))
+
+	// MR1: on_review -> on_fixes (notify author1)
+	mr1 := mrFactory.Create(repo, author1)
+	testutils.AssignReviewers(db, &mr1, reviewer)
+	comment1 := testutils.CreateMRComment(db, mr1, reviewer, 101, testutils.WithResolvable())
+	testutils.CreateMRAction(db, mr1, models.ActionCommentAdded,
+		testutils.WithActor(reviewer),
+		testutils.WithCommentID(comment1.ID),
+	)
+
+	// MR2: on_review -> on_fixes (notify author2)
+	mr2 := mrFactory.Create(repo, author2)
+	testutils.AssignReviewers(db, &mr2, reviewer)
+	comment2 := testutils.CreateMRComment(db, mr2, reviewer, 102, testutils.WithResolvable())
+	testutils.CreateMRAction(db, mr2, models.ActionCommentAdded,
+		testutils.WithActor(reviewer),
+		testutils.WithCommentID(comment2.ID),
+	)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer.ProcessStateChangeNotifications()
+
+	// Verify both authors received notifications
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 2 {
+		t.Fatalf("Expected 2 messages (one per MR author), got %d", len(sentMessages))
+	}
+
+	emails := make(map[string]bool)
+	for _, msg := range sentMessages {
+		emails[msg.ChatID] = true
+	}
+	if !emails["author1@example.com"] {
+		t.Error("Expected message to author1@example.com")
+	}
+	if !emails["author2@example.com"] {
+		t.Error("Expected message to author2@example.com")
+	}
+}
+
+// TestOnReviewFromInitial_NoNotification verifies no notification when MR is on_review from initial state.
+func TestOnReviewFromInitial_NoNotification(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer := userFactory.Create(testutils.WithEmail("reviewer@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+	// Note: LastNotifiedState is empty (initial state)
+
+	// No comments, MR is on_review
+	// Create a comment resolved action (shouldn't trigger re-review notification from initial state)
+	comment := testutils.CreateMRComment(db, mr, reviewer, 123,
+		testutils.WithResolvable(),
+		testutils.WithResolved(&author),
+	)
+
+	testutils.CreateMRAction(db, mr, models.ActionCommentResolved,
+		testutils.WithActor(author),
+		testutils.WithCommentID(comment.ID),
+	)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer.ProcessStateChangeNotifications()
+
+	// Verify NO notification (on_review but not from on_fixes)
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages (on_review from initial, not from on_fixes), got %d", len(sentMessages))
 	}
 }
