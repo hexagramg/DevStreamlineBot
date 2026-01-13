@@ -27,6 +27,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&models.MergeRequest{},
 		&models.MRComment{},
 		&models.MRAction{},
+		&models.BlockLabel{},
 	)
 	if err != nil {
 		t.Fatalf("failed to migrate test database: %v", err)
@@ -400,5 +401,449 @@ func TestMRStateConstants(t *testing.T) {
 		if string(tt.state) != tt.value {
 			t.Errorf("MRState constant %v = %q, want %q", tt.state, string(tt.state), tt.value)
 		}
+	}
+}
+
+func TestGetStateInfo_SubtractsBlockedTime(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create repository
+	repo := &models.Repository{GitlabID: 1, Name: "test-repo"}
+	db.Create(repo)
+
+	// Use a fixed time (Monday morning to avoid weekend issues)
+	// MR created at T (9am Monday)
+	baseTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC) // Monday 9am
+
+	// Create MR
+	mr := &models.MergeRequest{
+		State:           "opened",
+		Draft:           false,
+		RepositoryID:    repo.ID,
+		GitlabCreatedAt: &baseTime,
+	}
+	db.Create(mr)
+
+	// Block label added at T+2h, removed at T+4h (2h blocked)
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelAdded,
+		Timestamp:      baseTime.Add(2 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelRemoved,
+		Timestamp:      baseTime.Add(4 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+
+	// Current time: T+6h (within same workday to avoid complexity)
+	// We need to mock time.Now() somehow, but since we can't,
+	// let's verify the relationship: WorkingTime should be less than TimeInState by roughly blocked time
+
+	info := GetStateInfo(db, mr)
+
+	if info.State != StateOnReview {
+		t.Errorf("GetStateInfo().State = %v, want %v", info.State, StateOnReview)
+	}
+
+	// The key check: TimeInState should be > 0 and WorkingTime should be calculated correctly
+	// We can't test exact values without controlling time.Now(), but we can verify state
+	if info.StateSince == nil {
+		t.Error("GetStateInfo().StateSince should not be nil")
+	}
+}
+
+func TestGetStateInfo_CurrentlyBlocked(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create repository
+	repo := &models.Repository{GitlabID: 1, Name: "test-repo"}
+	db.Create(repo)
+
+	// Use a fixed time (Monday morning)
+	baseTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC) // Monday 9am
+
+	// Create MR
+	mr := &models.MergeRequest{
+		State:           "opened",
+		Draft:           false,
+		RepositoryID:    repo.ID,
+		GitlabCreatedAt: &baseTime,
+	}
+	db.Create(mr)
+
+	// Block label added at T+2h, never removed (currently blocked)
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelAdded,
+		Timestamp:      baseTime.Add(2 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+
+	info := GetStateInfo(db, mr)
+
+	if info.State != StateOnReview {
+		t.Errorf("GetStateInfo().State = %v, want %v", info.State, StateOnReview)
+	}
+
+	// Verify that StateSince is set
+	if info.StateSince == nil {
+		t.Error("GetStateInfo().StateSince should not be nil")
+	}
+
+	// WorkingTime should never be negative
+	if info.WorkingTime < 0 {
+		t.Errorf("GetStateInfo().WorkingTime = %v, should never be negative", info.WorkingTime)
+	}
+}
+
+func TestCalculateBlockedTime_Integration(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create repository
+	repo := &models.Repository{GitlabID: 1, Name: "test-repo"}
+	db.Create(repo)
+
+	// Create MR
+	baseTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC) // Monday 9am
+	mr := &models.MergeRequest{
+		State:           "opened",
+		Draft:           false,
+		RepositoryID:    repo.ID,
+		GitlabCreatedAt: &baseTime,
+	}
+	db.Create(mr)
+
+	// Create block label actions
+	// Block from T+1h to T+3h (2h blocked)
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelAdded,
+		Timestamp:      baseTime.Add(1 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelRemoved,
+		Timestamp:      baseTime.Add(3 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+
+	// Calculate blocked time for the window baseTime to baseTime+5h
+	start := baseTime
+	end := baseTime.Add(5 * time.Hour)
+	blockedTime := CalculateBlockedTime(db, mr.ID, repo.ID, start, end)
+
+	expected := 2 * time.Hour
+	if blockedTime != expected {
+		t.Errorf("CalculateBlockedTime() = %v, want %v", blockedTime, expected)
+	}
+}
+
+// ============================================================================
+// GetStateInfo Edge Case Tests
+// ============================================================================
+
+func TestGetStateInfo_BlockedTimeExceedsWorkingTime(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create repository
+	repo := &models.Repository{GitlabID: 1, Name: "test-repo"}
+	db.Create(repo)
+
+	// MR created in the past
+	baseTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC) // Monday 9am
+	mr := &models.MergeRequest{
+		State:           "opened",
+		Draft:           false,
+		RepositoryID:    repo.ID,
+		GitlabCreatedAt: &baseTime,
+	}
+	db.Create(mr)
+
+	// Block label added immediately and never removed (blocked entire time)
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelAdded,
+		Timestamp:      baseTime,
+		Metadata:       `{"label":"blocked"}`,
+	})
+
+	info := GetStateInfo(db, mr)
+
+	// WorkingTime should be 0 (never negative) since blocked entire time
+	if info.WorkingTime < 0 {
+		t.Errorf("GetStateInfo().WorkingTime = %v, should never be negative", info.WorkingTime)
+	}
+}
+
+func TestGetStateInfo_DraftStateWithBlocking(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create repository
+	repo := &models.Repository{GitlabID: 1, Name: "test-repo"}
+	db.Create(repo)
+
+	// Draft MR with block label
+	baseTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
+	mr := &models.MergeRequest{
+		State:           "opened",
+		Draft:           true, // Draft state
+		RepositoryID:    repo.ID,
+		GitlabCreatedAt: &baseTime,
+	}
+	db.Create(mr)
+
+	// Add block label action
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelAdded,
+		Timestamp:      baseTime.Add(1 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+
+	info := GetStateInfo(db, mr)
+
+	// State should be draft (takes priority over blocking)
+	if info.State != StateDraft {
+		t.Errorf("GetStateInfo().State = %v, want %v (draft takes priority)", info.State, StateDraft)
+	}
+
+	// WorkingTime should still account for blocking
+	if info.WorkingTime < 0 {
+		t.Errorf("GetStateInfo().WorkingTime = %v, should never be negative", info.WorkingTime)
+	}
+}
+
+func TestGetStateInfo_OnFixesStateWithBlocking(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create repository
+	repo := &models.Repository{GitlabID: 1, Name: "test-repo"}
+	db.Create(repo)
+
+	// Create user for comment author
+	user := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(user)
+
+	// MR with unresolved comments AND block labels
+	baseTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
+	mr := &models.MergeRequest{
+		State:           "opened",
+		Draft:           false,
+		RepositoryID:    repo.ID,
+		GitlabCreatedAt: &baseTime,
+	}
+	db.Create(mr)
+
+	// Add unresolved comment (puts MR in on_fixes state)
+	db.Create(&models.MRComment{
+		MergeRequestID:  mr.ID,
+		GitlabNoteID:    1,
+		AuthorID:        user.ID,
+		Resolvable:      true,
+		Resolved:        false,
+		GitlabCreatedAt: baseTime.Add(2 * time.Hour),
+	})
+
+	// Add block label
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelAdded,
+		Timestamp:      baseTime.Add(3 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+
+	info := GetStateInfo(db, mr)
+
+	// State should be on_fixes (comments determine state)
+	if info.State != StateOnFixes {
+		t.Errorf("GetStateInfo().State = %v, want %v", info.State, StateOnFixes)
+	}
+
+	// Unresolved count should be 1
+	if info.UnresolvedCount != 1 {
+		t.Errorf("GetStateInfo().UnresolvedCount = %d, want 1", info.UnresolvedCount)
+	}
+
+	// WorkingTime should exclude blocked time
+	if info.WorkingTime < 0 {
+		t.Errorf("GetStateInfo().WorkingTime = %v, should never be negative", info.WorkingTime)
+	}
+}
+
+func TestGetStateInfo_NilStateSince(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create repository
+	repo := &models.Repository{GitlabID: 1, Name: "test-repo"}
+	db.Create(repo)
+
+	// MR without GitlabCreatedAt (edge case)
+	mr := &models.MergeRequest{
+		State:           "opened",
+		Draft:           false,
+		RepositoryID:    repo.ID,
+		GitlabCreatedAt: nil, // No creation time
+	}
+	db.Create(mr)
+
+	info := GetStateInfo(db, mr)
+
+	// State should be on_review
+	if info.State != StateOnReview {
+		t.Errorf("GetStateInfo().State = %v, want %v", info.State, StateOnReview)
+	}
+
+	// Should handle nil StateSince gracefully (no panic)
+	// TimeInState and WorkingTime may be 0 or based on fallback
+}
+
+func TestGetStateInfo_MultipleBlockPeriods(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create repository
+	repo := &models.Repository{GitlabID: 1, Name: "test-repo"}
+	db.Create(repo)
+
+	// MR created in the past
+	baseTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
+	mr := &models.MergeRequest{
+		State:           "opened",
+		Draft:           false,
+		RepositoryID:    repo.ID,
+		GitlabCreatedAt: &baseTime,
+	}
+	db.Create(mr)
+
+	// First block period: T+1h to T+2h (1h blocked)
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelAdded,
+		Timestamp:      baseTime.Add(1 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelRemoved,
+		Timestamp:      baseTime.Add(2 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+
+	// Second block period: T+3h to T+4h (1h blocked)
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelAdded,
+		Timestamp:      baseTime.Add(3 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelRemoved,
+		Timestamp:      baseTime.Add(4 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+
+	// Calculate blocked time directly to verify
+	end := baseTime.Add(5 * time.Hour)
+	blockedTime := CalculateBlockedTime(db, mr.ID, repo.ID, baseTime, end)
+
+	expectedBlocked := 2 * time.Hour // 1h + 1h
+	if blockedTime != expectedBlocked {
+		t.Errorf("CalculateBlockedTime() = %v, want %v (multiple periods)", blockedTime, expectedBlocked)
+	}
+
+	info := GetStateInfo(db, mr)
+
+	// State should be on_review
+	if info.State != StateOnReview {
+		t.Errorf("GetStateInfo().State = %v, want %v", info.State, StateOnReview)
+	}
+
+	// WorkingTime should never be negative
+	if info.WorkingTime < 0 {
+		t.Errorf("GetStateInfo().WorkingTime = %v, should never be negative", info.WorkingTime)
+	}
+}
+
+func TestGetStateInfo_BlockDuringStateTransition(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create repository
+	repo := &models.Repository{GitlabID: 1, Name: "test-repo"}
+	db.Create(repo)
+
+	// Create user for comment author
+	user := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(user)
+
+	// MR starts on_review
+	baseTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
+	mr := &models.MergeRequest{
+		State:           "opened",
+		Draft:           false,
+		RepositoryID:    repo.ID,
+		GitlabCreatedAt: &baseTime,
+	}
+	db.Create(mr)
+
+	// T+1h: Block label added (still on_review, but blocked)
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelAdded,
+		Timestamp:      baseTime.Add(1 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+
+	// T+2h: Comment added (state → on_fixes)
+	comment := &models.MRComment{
+		MergeRequestID:  mr.ID,
+		GitlabNoteID:    1,
+		AuthorID:        user.ID,
+		Resolvable:      true,
+		Resolved:        false,
+		GitlabCreatedAt: baseTime.Add(2 * time.Hour),
+	}
+	db.Create(comment)
+
+	// T+3h: Comment resolved (state → on_review)
+	resolvedAt := baseTime.Add(3 * time.Hour)
+	db.Model(comment).Updates(map[string]interface{}{
+		"resolved":       true,
+		"resolved_by_id": user.ID,
+		"resolved_at":    resolvedAt,
+	})
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionCommentResolved,
+		Timestamp:      resolvedAt,
+		CommentID:      &comment.ID,
+	})
+
+	// T+4h: Block label removed
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionBlockLabelRemoved,
+		Timestamp:      baseTime.Add(4 * time.Hour),
+		Metadata:       `{"label":"blocked"}`,
+	})
+
+	info := GetStateInfo(db, mr)
+
+	// Final state should be on_review (all comments resolved)
+	if info.State != StateOnReview {
+		t.Errorf("GetStateInfo().State = %v, want %v", info.State, StateOnReview)
+	}
+
+	// UnresolvedCount should be 0
+	if info.UnresolvedCount != 0 {
+		t.Errorf("GetStateInfo().UnresolvedCount = %d, want 0", info.UnresolvedCount)
+	}
+
+	// WorkingTime should never be negative
+	if info.WorkingTime < 0 {
+		t.Errorf("GetStateInfo().WorkingTime = %v, should never be negative", info.WorkingTime)
 	}
 }

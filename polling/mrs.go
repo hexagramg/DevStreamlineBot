@@ -58,6 +58,49 @@ func recordMRAction(db *gorm.DB, mrID uint, actionType models.MRActionType, acto
 	}
 }
 
+// detectBlockLabelChanges detects when block labels are added or removed from an MR.
+// Records ActionBlockLabelAdded/ActionBlockLabelRemoved actions for SLA tracking.
+func detectBlockLabelChanges(db *gorm.DB, mrID uint, repoID uint, oldLabels, newLabels []string) {
+	// Get block labels for this repo
+	var blockLabels []models.BlockLabel
+	db.Where("repository_id = ?", repoID).Find(&blockLabels)
+	if len(blockLabels) == 0 {
+		return
+	}
+
+	blockLabelSet := make(map[string]bool)
+	for _, bl := range blockLabels {
+		blockLabelSet[bl.LabelName] = true
+	}
+
+	oldSet := make(map[string]bool)
+	for _, l := range oldLabels {
+		oldSet[l] = true
+	}
+	newSet := make(map[string]bool)
+	for _, l := range newLabels {
+		newSet[l] = true
+	}
+
+	now := time.Now()
+
+	// Check for added block labels
+	for label := range newSet {
+		if blockLabelSet[label] && !oldSet[label] {
+			recordMRAction(db, mrID, models.ActionBlockLabelAdded, nil, nil, nil, now,
+				fmt.Sprintf(`{"label":"%s"}`, label))
+		}
+	}
+
+	// Check for removed block labels
+	for label := range oldSet {
+		if blockLabelSet[label] && !newSet[label] {
+			recordMRAction(db, mrID, models.ActionBlockLabelRemoved, nil, nil, nil, now,
+				fmt.Sprintf(`{"label":"%s"}`, label))
+		}
+	}
+}
+
 // detectAndRecordStateChanges compares old and new MR state and records relevant actions.
 func detectAndRecordStateChanges(db *gorm.DB, existingMR *models.MergeRequest, newMR *gitlab.BasicMergeRequest, localMRID uint) {
 	now := time.Now()
@@ -407,6 +450,17 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		for _, r := range existingReviewers {
 			existingReviewerIDs[r.GitlabID] = true
 		}
+	}
+
+	// Detect block label changes before syncing labels
+	if !isNewMR {
+		var existingLabels []models.Label
+		db.Model(&existingMR).Association("Labels").Find(&existingLabels)
+		var oldLabelNames []string
+		for _, l := range existingLabels {
+			oldLabelNames = append(oldLabelNames, l.Name)
+		}
+		detectBlockLabelChanges(db, existingMR.ID, localRepositoryID, oldLabelNames, mr.Labels)
 	}
 
 	// Sync labels

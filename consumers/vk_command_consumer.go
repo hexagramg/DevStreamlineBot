@@ -69,6 +69,8 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleSLACommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/daily_digest") {
 		c.handleDailyDigestCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/add_block_label") {
+		c.handleAddBlockLabelCommand(msg, from)
 	}
 }
 
@@ -165,6 +167,7 @@ func (c *VKCommandConsumer) handleSubscribeCommand(msg *botgolang.Message, from 
 		c.db.Where("repository_id = ?", repo.ID).Delete(&models.LabelReviewer{})
 		c.db.Where("repository_id = ?", repo.ID).Delete(&models.RepositorySLA{})
 		c.db.Where("repository_id = ?", repo.ID).Delete(&models.Holiday{})
+		c.db.Where("repository_id = ?", repo.ID).Delete(&models.BlockLabel{})
 	}
 
 	// Create subscription
@@ -220,6 +223,13 @@ func (c *VKCommandConsumer) handleSubscribeCommand(msg *botgolang.Message, from 
 		c.db.Where("repository_id = ?", sourceRepoID).Find(&existingHolidays)
 		for _, h := range existingHolidays {
 			c.db.Create(&models.Holiday{RepositoryID: repo.ID, Date: h.Date})
+		}
+
+		// Copy BlockLabel entries
+		var existingBlockLabels []models.BlockLabel
+		c.db.Where("repository_id = ?", sourceRepoID).Find(&existingBlockLabels)
+		for _, bl := range existingBlockLabels {
+			c.db.Create(&models.BlockLabel{RepositoryID: repo.ID, LabelName: bl.LabelName})
 		}
 	}
 
@@ -1072,6 +1082,136 @@ func formatSLADuration(d time.Duration) string {
 		return "not set"
 	}
 	return utils.FormatDuration(d)
+}
+
+// handleAddBlockLabelCommand adds a block label for SLA pausing.
+// Format: /add_block_label <label_name> [#hexcolor]
+// Creates the label in GitLab if it doesn't exist, then saves as block label in DB.
+func (c *VKCommandConsumer) handleAddBlockLabelCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	// Get subscribed repositories
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var subs []models.RepositorySubscription
+	c.db.Where("chat_id = ?", chat.ID).Preload("Repository").Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+
+	// Parse command arguments
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/add_block_label"))
+	if argStr == "" {
+		c.sendReply(msg, "Usage: /add_block_label <label_name> [#hexcolor]\nDefault color: #dc143c (crimson)")
+		return
+	}
+
+	parts := strings.Fields(argStr)
+	labelName := parts[0]
+	color := "#dc143c" // Default crimson red
+
+	// Check for optional hex color (last argument starting with #)
+	if len(parts) >= 2 {
+		lastPart := parts[len(parts)-1]
+		if strings.HasPrefix(lastPart, "#") && isValidHexColor(lastPart) {
+			color = lastPart
+			// If color is separate from label name, label is everything except the color
+			if len(parts) > 2 {
+				labelName = strings.Join(parts[:len(parts)-1], " ")
+			}
+		} else {
+			// No valid color, entire arg is the label name
+			labelName = argStr
+		}
+	}
+
+	var successRepos []string
+	var failedRepos []string
+
+	for _, sub := range subs {
+		repo := sub.Repository
+
+		// Try to get existing label from GitLab
+		labels, _, err := c.glClient.Labels.ListLabels(repo.GitlabID, &gitlab.ListLabelsOptions{
+			Search: gitlab.Ptr(labelName),
+		})
+
+		labelExists := false
+		if err == nil {
+			for _, l := range labels {
+				if l.Name == labelName {
+					labelExists = true
+					break
+				}
+			}
+		}
+
+		// Create label in GitLab if it doesn't exist
+		if !labelExists {
+			_, _, err := c.glClient.Labels.CreateLabel(repo.GitlabID, &gitlab.CreateLabelOptions{
+				Name:  gitlab.Ptr(labelName),
+				Color: gitlab.Ptr(color),
+			})
+			if err != nil {
+				log.Printf("failed to create label %s in repo %d: %v", labelName, repo.GitlabID, err)
+				failedRepos = append(failedRepos, repo.Name)
+				continue
+			}
+		}
+
+		// Save block label in database
+		blockLabel := models.BlockLabel{
+			RepositoryID: repo.ID,
+			LabelName:    labelName,
+		}
+		if err := c.db.FirstOrCreate(&blockLabel, models.BlockLabel{
+			RepositoryID: repo.ID,
+			LabelName:    labelName,
+		}).Error; err != nil {
+			log.Printf("failed to save block label %s for repo %d: %v", labelName, repo.ID, err)
+			failedRepos = append(failedRepos, repo.Name)
+			continue
+		}
+
+		successRepos = append(successRepos, repo.Name)
+	}
+
+	// Build response message
+	var reply string
+	if len(successRepos) > 0 {
+		reply = fmt.Sprintf("Block label '%s' added for: %s", labelName, strings.Join(successRepos, ", "))
+	}
+	if len(failedRepos) > 0 {
+		if reply != "" {
+			reply += "\n"
+		}
+		reply += fmt.Sprintf("Failed for: %s", strings.Join(failedRepos, ", "))
+	}
+	if reply == "" {
+		reply = "No repositories were updated."
+	}
+	c.sendReply(msg, reply)
+}
+
+// isValidHexColor validates a hex color string (e.g., #FFAABB or #abc).
+func isValidHexColor(s string) bool {
+	if !strings.HasPrefix(s, "#") {
+		return false
+	}
+	hex := s[1:]
+	if len(hex) != 3 && len(hex) != 6 {
+		return false
+	}
+	for _, c := range hex {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // sendReply sends a reply message to the given message.

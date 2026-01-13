@@ -36,6 +36,7 @@ func SetupTestDB(t *testing.T) *gorm.DB {
 		&models.Holiday{},
 		&models.MRAction{},
 		&models.MRComment{},
+		&models.BlockLabel{},
 	)
 	if err != nil {
 		t.Fatalf("failed to migrate test database: %v", err)
@@ -398,4 +399,26 @@ func CreateHoliday(db *gorm.DB, repo models.Repository, date time.Time) models.H
 	}
 	db.Create(&holiday)
 	return holiday
+}
+
+// CreateBlockLabel creates a block label for a repository.
+func CreateBlockLabel(db *gorm.DB, repo models.Repository, labelName string) models.BlockLabel {
+	bl := models.BlockLabel{
+		RepositoryID: repo.ID,
+		LabelName:    labelName,
+	}
+	db.Create(&bl)
+	return bl
+}
+
+// CreateBlockLabelAction creates a block label added or removed action for testing.
+func CreateBlockLabelAction(db *gorm.DB, mr models.MergeRequest, actionType models.MRActionType, label string, timestamp time.Time) models.MRAction {
+	action := models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     actionType,
+		Timestamp:      timestamp,
+		Metadata:       fmt.Sprintf(`{"label":"%s"}`, label),
+	}
+	db.Create(&action)
+	return action
 }

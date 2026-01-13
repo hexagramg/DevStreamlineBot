@@ -298,18 +298,29 @@ type Holiday struct {
 	Date         time.Time  `gorm:"type:date;not null;uniqueIndex:idx_holiday_unique,priority:2"`
 }
 
+// BlockLabel stores labels that pause SLA tracking for merge requests.
+// When an MR has a block label, its SLA timer is frozen.
+type BlockLabel struct {
+	gorm.Model
+	RepositoryID uint       `gorm:"not null;uniqueIndex:idx_block_label_unique,priority:1"`
+	Repository   Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	LabelName    string     `gorm:"not null;uniqueIndex:idx_block_label_unique,priority:2"`
+}
+
 // MRActionType defines the type of action recorded for an MR.
 type MRActionType string
 
 const (
-	ActionReviewerAssigned MRActionType = "reviewer_assigned"
-	ActionCommentAdded     MRActionType = "comment_added"
-	ActionCommentResolved  MRActionType = "comment_resolved"
-	ActionApproved         MRActionType = "approved"
-	ActionUnapproved       MRActionType = "unapproved"
-	ActionDraftToggled     MRActionType = "draft_toggled"
-	ActionMerged           MRActionType = "merged"
-	ActionClosed           MRActionType = "closed"
+	ActionReviewerAssigned  MRActionType = "reviewer_assigned"
+	ActionCommentAdded      MRActionType = "comment_added"
+	ActionCommentResolved   MRActionType = "comment_resolved"
+	ActionApproved          MRActionType = "approved"
+	ActionUnapproved        MRActionType = "unapproved"
+	ActionDraftToggled      MRActionType = "draft_toggled"
+	ActionMerged            MRActionType = "merged"
+	ActionClosed            MRActionType = "closed"
+	ActionBlockLabelAdded   MRActionType = "block_label_added"
+	ActionBlockLabelRemoved MRActionType = "block_label_removed"
 )
 
 // MRAction records timestamped actions for MR timeline tracking.

@@ -29,6 +29,26 @@ type DigestMR struct {
 	TimeInState   time.Duration // Working time only
 	SLAExceeded   bool
 	SLAPercentage float64
+	Blocked       bool // Whether MR currently has a block label
+}
+
+// IsMRBlocked checks if an MR has any block labels configured for its repository.
+func IsMRBlocked(db *gorm.DB, mr *models.MergeRequest) bool {
+	if len(mr.Labels) == 0 {
+		return false
+	}
+
+	labelNames := make([]string, len(mr.Labels))
+	for i, l := range mr.Labels {
+		labelNames[i] = l.Name
+	}
+
+	var count int64
+	db.Model(&models.BlockLabel{}).
+		Where("repository_id = ? AND label_name IN ?", mr.RepositoryID, labelNames).
+		Count(&count)
+
+	return count > 0
 }
 
 // FindDigestMergeRequestsWithState returns open MRs with state information for enhanced digest.
@@ -42,6 +62,7 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 		Preload("Author").
 		Preload("Reviewers").
 		Preload("Repository").
+		Preload("Labels").
 		Where("merge_requests.state = ? AND merge_requests.merged_at IS NULL", "opened").
 		Where("EXISTS (SELECT 1 FROM merge_request_reviewers mrr WHERE mrr.merge_request_id = merge_requests.id)").
 		Where("repository_id IN ?", repoIDs).
@@ -53,6 +74,9 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 	var digestMRs []DigestMR
 	for _, mr := range mrs {
 		stateInfo := GetStateInfo(db, &mr)
+
+		// Check if MR is currently blocked
+		blocked := IsMRBlocked(db, &mr)
 
 		// Get SLA thresholds
 		sla, _ := GetRepositorySLA(db, mr.RepositoryID)
@@ -72,6 +96,7 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 			TimeInState:   stateInfo.WorkingTime,
 			SLAExceeded:   exceeded,
 			SLAPercentage: percentage,
+			Blocked:       blocked,
 		})
 	}
 
@@ -89,6 +114,7 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		Preload("Author").
 		Preload("Reviewers").
 		Preload("Repository").
+		Preload("Labels").
 		Where("merge_requests.state = ? AND merge_requests.merged_at IS NULL", "opened").
 		Where("EXISTS (SELECT 1 FROM merge_request_reviewers mrr WHERE mrr.merge_request_id = merge_requests.id AND mrr.user_id = ?)", userID).
 		Where("NOT EXISTS (SELECT 1 FROM merge_request_approvers mra WHERE mra.merge_request_id = merge_requests.id AND mra.user_id = ?)", userID).
@@ -103,6 +129,7 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		Preload("Author").
 		Preload("Reviewers").
 		Preload("Repository").
+		Preload("Labels").
 		Where("merge_requests.state = ? AND merge_requests.merged_at IS NULL", "opened").
 		Where("author_id = ?", userID).
 		Where("EXISTS (SELECT 1 FROM merge_request_reviewers mrr WHERE mrr.merge_request_id = merge_requests.id)").
@@ -118,6 +145,7 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 			continue
 		}
 
+		blocked := IsMRBlocked(db, &mr)
 		sla, _ := GetRepositorySLA(db, mr.RepositoryID)
 		threshold := sla.ReviewDuration.ToDuration()
 		exceeded, percentage := CheckSLAStatus(stateInfo.WorkingTime, threshold)
@@ -129,6 +157,7 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 			TimeInState:   stateInfo.WorkingTime,
 			SLAExceeded:   exceeded,
 			SLAPercentage: percentage,
+			Blocked:       blocked,
 		})
 	}
 
@@ -139,6 +168,7 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 			continue
 		}
 
+		blocked := IsMRBlocked(db, &mr)
 		sla, _ := GetRepositorySLA(db, mr.RepositoryID)
 		threshold := sla.FixesDuration.ToDuration()
 		exceeded, percentage := CheckSLAStatus(stateInfo.WorkingTime, threshold)
@@ -150,6 +180,7 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 			TimeInState:   stateInfo.WorkingTime,
 			SLAExceeded:   exceeded,
 			SLAPercentage: percentage,
+			Blocked:       blocked,
 		})
 	}
 

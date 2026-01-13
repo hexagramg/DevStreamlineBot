@@ -66,10 +66,18 @@ func GetStateInfo(db *gorm.DB, mr *models.MergeRequest) StateInfo {
 
 	// Calculate time in state
 	if info.StateSince != nil {
-		info.TimeInState = time.Since(*info.StateSince)
+		now := time.Now()
+		info.TimeInState = now.Sub(*info.StateSince)
 
 		// Calculate working time (excludes weekends/holidays)
-		info.WorkingTime = CalculateWorkingTime(db, mr.RepositoryID, *info.StateSince, time.Now())
+		info.WorkingTime = CalculateWorkingTime(db, mr.RepositoryID, *info.StateSince, now)
+
+		// Subtract blocked time (uses same window as working time)
+		blockedTime := CalculateBlockedTime(db, mr.ID, mr.RepositoryID, *info.StateSince, now)
+		info.WorkingTime -= blockedTime
+		if info.WorkingTime < 0 {
+			info.WorkingTime = 0
+		}
 	}
 
 	// Count unresolved comments
@@ -78,6 +86,74 @@ func GetStateInfo(db *gorm.DB, mr *models.MergeRequest) StateInfo {
 		Count(&info.UnresolvedCount)
 
 	return info
+}
+
+// CalculateBlockedTime calculates total working time an MR was blocked by block labels
+// within the given time window. Uses MRAction records for retrospective calculation.
+// Handles overlapping block labels (multiple block labels = still just blocked once).
+func CalculateBlockedTime(db *gorm.DB, mrID uint, repoID uint, start, end time.Time) time.Duration {
+	var actions []models.MRAction
+	db.Where("merge_request_id = ? AND action_type IN ?", mrID,
+		[]models.MRActionType{models.ActionBlockLabelAdded, models.ActionBlockLabelRemoved}).
+		Order("timestamp ASC").
+		Find(&actions)
+
+	if len(actions) == 0 {
+		return 0
+	}
+
+	// Track active block label count (handles multiple overlapping block labels)
+	activeCount := 0
+	var blockStart *time.Time
+	var totalBlocked time.Duration
+
+	// First, process actions before our window to establish initial state
+	for _, action := range actions {
+		if !action.Timestamp.Before(start) {
+			break
+		}
+		if action.ActionType == models.ActionBlockLabelAdded {
+			activeCount++
+		} else {
+			activeCount--
+		}
+	}
+
+	// If already blocked at window start
+	if activeCount > 0 {
+		blockStart = &start
+	}
+
+	// Process actions within our window
+	for _, action := range actions {
+		ts := action.Timestamp
+		if ts.Before(start) {
+			continue
+		}
+		if ts.After(end) {
+			break
+		}
+
+		if action.ActionType == models.ActionBlockLabelAdded {
+			if activeCount == 0 {
+				blockStart = &ts
+			}
+			activeCount++
+		} else {
+			activeCount--
+			if activeCount == 0 && blockStart != nil {
+				totalBlocked += CalculateWorkingTime(db, repoID, *blockStart, ts)
+				blockStart = nil
+			}
+		}
+	}
+
+	// If still blocked at window end
+	if activeCount > 0 && blockStart != nil {
+		totalBlocked += CalculateWorkingTime(db, repoID, *blockStart, end)
+	}
+
+	return totalBlocked
 }
 
 // GetStateTransitionTime returns when the MR entered its current state.

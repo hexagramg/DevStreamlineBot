@@ -153,16 +153,24 @@ func writeDigestEntry(db *gorm.DB, sb *strings.Builder, dmr *DigestMR) {
 }
 
 // formatSLAFromDigest formats SLA status from pre-computed DigestMR fields.
+// Appends ⏸ icon if MR is currently blocked.
 func formatSLAFromDigest(dmr *DigestMR) string {
+	var result string
 	if dmr.SLAPercentage == 0 {
-		return "N/A"
-	}
-	if dmr.SLAExceeded {
-		return fmt.Sprintf("%.0f%% ❌", dmr.SLAPercentage)
+		result = "N/A"
+	} else if dmr.SLAExceeded {
+		result = fmt.Sprintf("%.0f%% ❌", dmr.SLAPercentage)
 	} else if dmr.SLAPercentage >= 80 {
-		return fmt.Sprintf("%.0f%% ⚠️", dmr.SLAPercentage)
+		result = fmt.Sprintf("%.0f%% ⚠️", dmr.SLAPercentage)
+	} else {
+		result = fmt.Sprintf("%.0f%%", dmr.SLAPercentage)
 	}
-	return fmt.Sprintf("%.0f%%", dmr.SLAPercentage)
+
+	// Append pause icon if currently blocked
+	if dmr.Blocked {
+		result += " ⏸"
+	}
+	return result
 }
 
 // BuildUserActionsDigest builds a digest of actions required from a specific user.
