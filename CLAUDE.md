@@ -112,7 +112,7 @@ MR states are derived dynamically based on DB data (not stored as a field):
 ## Bot Commands
 
 ### Core Commands
-- `/subscribe <repo_id>` - Subscribe chat to GitLab repo notifications
+- `/subscribe <repo_id> [--force]` - Subscribe chat to GitLab repo notifications. Copies settings (reviewers, SLA, holidays) from other repos in the same chat. Use `--force` to take over a repo owned by another chat.
 - `/unsubscribe <repo_id>` - Unsubscribe from repo
 - `/reviewers user1,user2` - Set default reviewer pool for subscribed repos
 - `/reviewers` - Clear default reviewers

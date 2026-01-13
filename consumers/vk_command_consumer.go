@@ -73,12 +73,23 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 }
 
 // handleSubscribeCommand processes the /subscribe command to link a chat with a repository.
-// Format: /subscribe 1234 where 1234 is the GitLab repository ID
+// Format: /subscribe <repo_id> [--force]
+// If another chat already owns the repository, --force is required to take over.
+// Settings (reviewers, SLA, holidays) are copied from other repositories in the same chat.
 func (c *VKCommandConsumer) handleSubscribeCommand(msg *botgolang.Message, from botgolang.Contact) {
 	parts := strings.Fields(msg.Text)
 	if len(parts) < 2 {
-		c.sendReply(msg, "Usage: /subscribe <repository_id>")
+		c.sendReply(msg, "Usage: /subscribe <repository_id> [--force]")
 		return
+	}
+
+	// Parse --force flag
+	forceFlag := false
+	for _, p := range parts {
+		if p == "--force" {
+			forceFlag = true
+			break
+		}
 	}
 
 	// Parse repository ID
@@ -126,11 +137,34 @@ func (c *VKCommandConsumer) handleSubscribeCommand(msg *botgolang.Message, from 
 		return
 	}
 
-	// Check if subscription already exists
+	// Check if subscription already exists for this chat
 	var existingSub models.RepositorySubscription
 	if err := c.db.Where("repository_id = ? AND chat_id = ?", repo.ID, chat.ID).First(&existingSub).Error; err == nil {
 		c.sendReply(msg, fmt.Sprintf("This chat is already subscribed to repository: %s", repo.Name))
 		return
+	}
+
+	// Check if repository is owned by another chat
+	var otherSub models.RepositorySubscription
+	takenOver := false
+	var oldChatTitle string
+	if err := c.db.Preload("Chat").Where("repository_id = ? AND chat_id != ?", repo.ID, chat.ID).First(&otherSub).Error; err == nil {
+		// Repo is owned by another chat
+		if !forceFlag {
+			c.sendReply(msg, fmt.Sprintf("Repository %s is already subscribed by chat '%s'. Use '/subscribe %d --force' to take over.",
+				repo.Name, otherSub.Chat.Title, repoID))
+			return
+		}
+		// Force flag provided - remove other subscription and clear settings
+		oldChatTitle = otherSub.Chat.Title
+		takenOver = true
+		c.db.Delete(&otherSub)
+
+		// Clear existing settings on the repository
+		c.db.Where("repository_id = ?", repo.ID).Delete(&models.PossibleReviewer{})
+		c.db.Where("repository_id = ?", repo.ID).Delete(&models.LabelReviewer{})
+		c.db.Where("repository_id = ?", repo.ID).Delete(&models.RepositorySLA{})
+		c.db.Where("repository_id = ?", repo.ID).Delete(&models.Holiday{})
 	}
 
 	// Create subscription
@@ -147,8 +181,62 @@ func (c *VKCommandConsumer) handleSubscribeCommand(msg *botgolang.Message, from 
 		return
 	}
 
-	// Reply with success message
-	c.sendReply(msg, fmt.Sprintf("Repository %s is now subscribed", repo.Name))
+	// Copy settings from other repositories in this chat
+	settingsCopied := false
+	var existingSubs []models.RepositorySubscription
+	c.db.Where("chat_id = ? AND repository_id != ?", chat.ID, repo.ID).Find(&existingSubs)
+
+	if len(existingSubs) > 0 {
+		sourceRepoID := existingSubs[0].RepositoryID
+		settingsCopied = true
+
+		// Copy PossibleReviewer entries
+		var existingReviewers []models.PossibleReviewer
+		c.db.Where("repository_id = ?", sourceRepoID).Find(&existingReviewers)
+		for _, r := range existingReviewers {
+			c.db.Create(&models.PossibleReviewer{RepositoryID: repo.ID, UserID: r.UserID})
+		}
+
+		// Copy LabelReviewer entries
+		var existingLabelReviewers []models.LabelReviewer
+		c.db.Where("repository_id = ?", sourceRepoID).Find(&existingLabelReviewers)
+		for _, lr := range existingLabelReviewers {
+			c.db.Create(&models.LabelReviewer{RepositoryID: repo.ID, LabelName: lr.LabelName, UserID: lr.UserID})
+		}
+
+		// Copy RepositorySLA
+		var existingSLA models.RepositorySLA
+		if err := c.db.Where("repository_id = ?", sourceRepoID).First(&existingSLA).Error; err == nil {
+			c.db.Create(&models.RepositorySLA{
+				RepositoryID:   repo.ID,
+				ReviewDuration: existingSLA.ReviewDuration,
+				FixesDuration:  existingSLA.FixesDuration,
+				AssignCount:    existingSLA.AssignCount,
+			})
+		}
+
+		// Copy Holiday entries
+		var existingHolidays []models.Holiday
+		c.db.Where("repository_id = ?", sourceRepoID).Find(&existingHolidays)
+		for _, h := range existingHolidays {
+			c.db.Create(&models.Holiday{RepositoryID: repo.ID, Date: h.Date})
+		}
+	}
+
+	// Reply with appropriate success message
+	var successMsg string
+	if takenOver {
+		if settingsCopied {
+			successMsg = fmt.Sprintf("Repository %s is now subscribed (taken over from '%s'). Settings copied from existing subscriptions.", repo.Name, oldChatTitle)
+		} else {
+			successMsg = fmt.Sprintf("Repository %s is now subscribed (taken over from '%s'). Configure reviewers with /reviewers.", repo.Name, oldChatTitle)
+		}
+	} else if settingsCopied {
+		successMsg = fmt.Sprintf("Repository %s is now subscribed. Settings copied from existing subscriptions.", repo.Name)
+	} else {
+		successMsg = fmt.Sprintf("Repository %s is now subscribed. Configure reviewers with /reviewers.", repo.Name)
+	}
+	c.sendReply(msg, successMsg)
 }
 
 // handleUnsubscribeCommand processes the /unsubscribe command to remove a subscription.
