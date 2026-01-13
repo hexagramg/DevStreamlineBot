@@ -3,6 +3,7 @@ package utils
 import (
 	"devstreamlinebot/models"
 	"fmt"
+	"sort"
 	"strings"
 
 	"gorm.io/gorm"
@@ -79,6 +80,14 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 			pendingFixes = append(pendingFixes, dmr)
 		}
 	}
+
+	// Sort by SLA percentage descending (most urgent first)
+	sort.Slice(pendingReview, func(i, j int) bool {
+		return pendingReview[i].SLAPercentage > pendingReview[j].SLAPercentage
+	})
+	sort.Slice(pendingFixes, func(i, j int) bool {
+		return pendingFixes[i].SLAPercentage > pendingFixes[j].SLAPercentage
+	})
 
 	var sb strings.Builder
 
