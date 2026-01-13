@@ -8,9 +8,10 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	Gitlab   GitlabConfig   `mapstructure:"gitlab"`
-	VK       VKConfig       `mapstructure:"vk"`
-	Database DatabaseConfig `mapstructure:"database"`
+	Gitlab    GitlabConfig   `mapstructure:"gitlab"`
+	VK        VKConfig       `mapstructure:"vk"`
+	Database  DatabaseConfig `mapstructure:"database"`
+	StartTime string         `mapstructure:"start_time"` // Optional, format: YYYY-MM-DD
 }
 
 // GitlabConfig contains settings for the GitLab integration.

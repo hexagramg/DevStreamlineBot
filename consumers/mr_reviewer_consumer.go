@@ -27,28 +27,38 @@ type MRReviewerConsumer struct {
 }
 
 // NewMRReviewerConsumer initializes a new MRReviewerConsumer.
-func NewMRReviewerConsumer(db *gorm.DB, vkBot *botgolang.Bot, glClient *gitlab.Client, interval time.Duration) *MRReviewerConsumer {
+// If startTime is nil, defaults to 2 days before now.
+func NewMRReviewerConsumer(db *gorm.DB, vkBot *botgolang.Bot, glClient *gitlab.Client, interval time.Duration, startTime *time.Time) *MRReviewerConsumer {
 	var bot interfaces.VKBot
 	if vkBot != nil {
 		bot = &interfaces.RealVKBot{Bot: vkBot}
+	}
+	st := time.Now().AddDate(0, 0, -2)
+	if startTime != nil {
+		st = *startTime
 	}
 	return &MRReviewerConsumer{
 		db:        db,
 		vkBot:     bot,
 		glClient:  glClient,
 		interval:  interval,
-		startTime: time.Now().AddDate(0, 0, -2),
+		startTime: st,
 	}
 }
 
 // NewMRReviewerConsumerWithBot initializes a consumer with a custom VKBot (for testing).
-func NewMRReviewerConsumerWithBot(db *gorm.DB, vkBot interfaces.VKBot, glClient *gitlab.Client, interval time.Duration) *MRReviewerConsumer {
+// If startTime is nil, defaults to 2 days before now.
+func NewMRReviewerConsumerWithBot(db *gorm.DB, vkBot interfaces.VKBot, glClient *gitlab.Client, interval time.Duration, startTime *time.Time) *MRReviewerConsumer {
+	st := time.Now().AddDate(0, 0, -2)
+	if startTime != nil {
+		st = *startTime
+	}
 	return &MRReviewerConsumer{
 		db:        db,
 		vkBot:     vkBot,
 		glClient:  glClient,
 		interval:  interval,
-		startTime: time.Now().AddDate(0, 0, -2),
+		startTime: st,
 	}
 }
 

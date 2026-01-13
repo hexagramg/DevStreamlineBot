@@ -131,8 +131,16 @@ func main() {
 	vkCommandConsumer := consumers.NewVKCommandConsumer(db, vkBot, glClient, vkEvents)
 	vkCommandConsumer.StartConsumer()
 
-	// Initialize  MR reviewer assignment consumer
-	mrReviewerConsumer := consumers.NewMRReviewerConsumer(db, vkBot, glClient, cfg.Gitlab.PollInterval)
+	// Initialize MR reviewer assignment consumer
+	var startTime *time.Time
+	if cfg.StartTime != "" {
+		parsed, err := time.Parse("2006-01-02", cfg.StartTime)
+		if err != nil {
+			log.Fatalf("invalid start_time format (expected YYYY-MM-DD): %v", err)
+		}
+		startTime = &parsed
+	}
+	mrReviewerConsumer := consumers.NewMRReviewerConsumer(db, vkBot, glClient, cfg.Gitlab.PollInterval, startTime)
 
 	// Initialize and start review digest consumer
 	reviewDigestConsumer := consumers.NewReviewDigestConsumer(db, vkBot)

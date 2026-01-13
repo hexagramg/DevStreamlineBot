@@ -13,7 +13,7 @@ import (
 // TestPickReviewerFromPool_EmptyPool tests behavior with empty pool.
 func TestPickReviewerFromPool_EmptyPool(t *testing.T) {
 	db := testutils.SetupTestDB(t)
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	idx := consumer.pickReviewerFromPool([]models.User{}, map[uint]int{})
 
@@ -26,7 +26,7 @@ func TestPickReviewerFromPool_EmptyPool(t *testing.T) {
 func TestPickReviewerFromPool_SingleUser(t *testing.T) {
 	db := testutils.SetupTestDB(t)
 	userFactory := testutils.NewUserFactory(db)
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	user := userFactory.Create()
 	users := []models.User{user}
@@ -42,7 +42,7 @@ func TestPickReviewerFromPool_SingleUser(t *testing.T) {
 func TestPickReviewerFromPool_WeightedSelection(t *testing.T) {
 	db := testutils.SetupTestDB(t)
 	userFactory := testutils.NewUserFactory(db)
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	heavyLoadUser := userFactory.Create(testutils.WithUsername("heavy"))
 	lightLoadUser := userFactory.Create(testutils.WithUsername("light"))
@@ -75,7 +75,7 @@ func TestPickReviewerFromPool_WeightedSelection(t *testing.T) {
 func TestPickReviewerFromPool_UserMissingFromCounts(t *testing.T) {
 	db := testutils.SetupTestDB(t)
 	userFactory := testutils.NewUserFactory(db)
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	user1 := userFactory.Create(testutils.WithUsername("user1"))
 	user2 := userFactory.Create(testutils.WithUsername("user2"))
@@ -104,7 +104,7 @@ func TestPickReviewerFromPool_UserMissingFromCounts(t *testing.T) {
 func TestPickMultipleFromPool_PoolSmallerThanCount(t *testing.T) {
 	db := testutils.SetupTestDB(t)
 	userFactory := testutils.NewUserFactory(db)
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	user1 := userFactory.Create()
 	user2 := userFactory.Create()
@@ -122,7 +122,7 @@ func TestPickMultipleFromPool_PoolSmallerThanCount(t *testing.T) {
 func TestPickMultipleFromPool_PoolEqualsCount(t *testing.T) {
 	db := testutils.SetupTestDB(t)
 	userFactory := testutils.NewUserFactory(db)
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	user1 := userFactory.Create()
 	user2 := userFactory.Create()
@@ -141,7 +141,7 @@ func TestPickMultipleFromPool_PoolEqualsCount(t *testing.T) {
 func TestPickMultipleFromPool_PoolLargerThanCount(t *testing.T) {
 	db := testutils.SetupTestDB(t)
 	userFactory := testutils.NewUserFactory(db)
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	var users []models.User
 	for i := 0; i < 10; i++ {
@@ -160,7 +160,7 @@ func TestPickMultipleFromPool_PoolLargerThanCount(t *testing.T) {
 func TestPickMultipleFromPool_NoDuplicates(t *testing.T) {
 	db := testutils.SetupTestDB(t)
 	userFactory := testutils.NewUserFactory(db)
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	var users []models.User
 	for i := 0; i < 5; i++ {
@@ -185,7 +185,7 @@ func TestPickMultipleFromPool_NoDuplicates(t *testing.T) {
 // TestPickMultipleFromPool_EmptyPool tests behavior with empty pool.
 func TestPickMultipleFromPool_EmptyPool(t *testing.T) {
 	db := testutils.SetupTestDB(t)
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	selected := consumer.pickMultipleFromPool([]models.User{}, 3, map[uint]int{})
 
@@ -198,7 +198,7 @@ func TestPickMultipleFromPool_EmptyPool(t *testing.T) {
 func TestPickMultipleFromPool_ZeroCount(t *testing.T) {
 	db := testutils.SetupTestDB(t)
 	userFactory := testutils.NewUserFactory(db)
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	users := []models.User{userFactory.Create(), userFactory.Create()}
 
@@ -220,7 +220,7 @@ func TestGetLabelReviewerGroups_NoLabels(t *testing.T) {
 	author := userFactory.Create()
 	mr := mrFactory.Create(repo, author)
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	groups := consumer.getLabelReviewerGroups(&mr)
 
 	if groups != nil {
@@ -239,7 +239,7 @@ func TestGetLabelReviewerGroups_LabelsWithoutReviewers(t *testing.T) {
 	author := userFactory.Create()
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend", "frontend"))
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	groups := consumer.getLabelReviewerGroups(&mr)
 
 	if groups != nil {
@@ -264,7 +264,7 @@ func TestGetLabelReviewerGroups_ExcludesAuthor(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend"))
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	groups := consumer.getLabelReviewerGroups(&mr)
 
 	if len(groups["backend"]) != 1 {
@@ -292,7 +292,7 @@ func TestGetLabelReviewerGroups_ExcludesVacationUsers(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "frontend"))
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	groups := consumer.getLabelReviewerGroups(&mr)
 
 	if len(groups["frontend"]) != 1 {
@@ -320,7 +320,7 @@ func TestGetLabelReviewerGroups_MultipleLabels(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend", "frontend"))
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	groups := consumer.getLabelReviewerGroups(&mr)
 
 	if len(groups) != 2 {
@@ -345,7 +345,7 @@ func TestGetDefaultReviewers_EmptyPool(t *testing.T) {
 	author := userFactory.Create()
 	mr := mrFactory.Create(repo, author)
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	reviewers := consumer.getDefaultReviewers(&mr)
 
 	if len(reviewers) != 0 {
@@ -369,7 +369,7 @@ func TestGetDefaultReviewers_ExcludesAuthor(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author)
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	reviewers := consumer.getDefaultReviewers(&mr)
 
 	if len(reviewers) != 1 {
@@ -397,7 +397,7 @@ func TestGetDefaultReviewers_ExcludesVacationUsers(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author)
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	reviewers := consumer.getDefaultReviewers(&mr)
 
 	if len(reviewers) != 1 {
@@ -411,7 +411,7 @@ func TestGetDefaultReviewers_ExcludesVacationUsers(t *testing.T) {
 // TestGetReviewCountsForUserIDs_EmptyIDs tests with empty user IDs.
 func TestGetReviewCountsForUserIDs_EmptyIDs(t *testing.T) {
 	db := testutils.SetupTestDB(t)
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	counts := consumer.getReviewCountsForUserIDs([]uint{})
 
@@ -438,7 +438,7 @@ func TestGetReviewCountsForUserIDs_UserWithReviews(t *testing.T) {
 		testutils.AssignReviewers(db, &mr, reviewer)
 	}
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	counts := consumer.getReviewCountsForUserIDs([]uint{reviewer.ID})
 
 	if counts[reviewer.ID] != 3 {
@@ -462,7 +462,7 @@ func TestGetReviewCountsForUserIDs_OldReviewsNotCounted(t *testing.T) {
 	mr := mrFactory.Create(repo, author, testutils.WithCreatedAt(oldTime))
 	testutils.AssignReviewers(db, &mr, reviewer)
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	counts := consumer.getReviewCountsForUserIDs([]uint{reviewer.ID})
 
 	if counts[reviewer.ID] != 0 {
@@ -487,7 +487,7 @@ func TestSelectReviewers_UsesLabelReviewers(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend"))
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	selected := consumer.selectReviewers(&mr, 1)
 
 	if len(selected) != 1 {
@@ -513,7 +513,7 @@ func TestSelectReviewers_FallsBackToDefaultPool(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author)
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	selected := consumer.selectReviewers(&mr, 1)
 
 	if len(selected) != 1 {
@@ -539,7 +539,7 @@ func TestSelectFromLabelGroups_OneLabel(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend"))
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	groups := consumer.getLabelReviewerGroups(&mr)
 	selected := consumer.selectFromLabelGroups(&mr, groups, 1)
 
@@ -568,7 +568,7 @@ func TestSelectFromLabelGroups_TwoLabels(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend", "frontend"))
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	groups := consumer.getLabelReviewerGroups(&mr)
 	selected := consumer.selectFromLabelGroups(&mr, groups, 2)
 
@@ -605,7 +605,7 @@ func TestSelectFromLabelGroups_NoReuseAcrossLabels(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend", "frontend"))
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 
 	// Run multiple times to ensure no duplicates
 	for i := 0; i < 50; i++ {
@@ -642,7 +642,7 @@ func TestSelectFromLabelGroups_FillsFromDefaultPool(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend"))
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	groups := consumer.getLabelReviewerGroups(&mr)
 	selected := consumer.selectFromLabelGroups(&mr, groups, 3)
 
@@ -671,7 +671,7 @@ func TestGetAssignCount_ReturnsConfiguredValue(t *testing.T) {
 	repo := repoFactory.Create()
 	testutils.CreateRepositorySLA(db, repo, 3)
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	count := consumer.getAssignCount(repo.ID)
 
 	if count != 3 {
@@ -686,7 +686,7 @@ func TestGetAssignCount_DefaultsToOne(t *testing.T) {
 
 	repo := repoFactory.Create()
 
-	consumer := NewMRReviewerConsumer(db, nil, nil, 0)
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
 	count := consumer.getAssignCount(repo.ID)
 
 	if count != 1 {
@@ -703,7 +703,7 @@ func TestProcessStateChangeNotifications_NoActions(t *testing.T) {
 	db := testutils.SetupTestDB(t)
 	mockBot := mocks.NewMockVKBot()
 
-	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
 	consumer.ProcessStateChangeNotifications()
 
 	sentMessages := mockBot.GetSentMessages()
@@ -730,7 +730,7 @@ func TestProcessStateChangeNotifications_ClosedMR(t *testing.T) {
 	// Create unnotified action
 	action := testutils.CreateMRAction(db, mr, models.ActionCommentAdded, testutils.WithActor(reviewer))
 
-	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
 	consumer.ProcessStateChangeNotifications()
 
 	// Verify no messages sent
@@ -771,7 +771,7 @@ func TestStateChange_OnReviewToOnFixes(t *testing.T) {
 		testutils.WithCommentID(comment.ID),
 	)
 
-	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
 	consumer.ProcessStateChangeNotifications()
 
 	// Verify author received notification
@@ -824,7 +824,7 @@ func TestStateChange_OnFixesToOnReview(t *testing.T) {
 		testutils.WithCommentID(comment.ID),
 	)
 
-	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
 	consumer.ProcessStateChangeNotifications()
 
 	// Verify reviewer received notification
@@ -874,7 +874,7 @@ func TestNoNotification_AlreadyOnFixes(t *testing.T) {
 		testutils.WithCommentID(comment.ID),
 	)
 
-	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
 	consumer.ProcessStateChangeNotifications()
 
 	// Verify NO messages sent (already in on_fixes, no state change)
@@ -921,7 +921,7 @@ func TestNoNotification_AlreadyOnReview(t *testing.T) {
 		testutils.WithCommentID(comment.ID),
 	)
 
-	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
 	consumer.ProcessStateChangeNotifications()
 
 	// Verify NO messages sent (already in on_review, no state change)
@@ -969,7 +969,7 @@ func TestMultipleReviewers_AllNotified(t *testing.T) {
 		testutils.WithCommentID(comment.ID),
 	)
 
-	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
 	consumer.ProcessStateChangeNotifications()
 
 	// Verify all 3 reviewers received notifications
@@ -1021,7 +1021,7 @@ func TestBatchProcessing_MultipleMRs(t *testing.T) {
 		testutils.WithCommentID(comment2.ID),
 	)
 
-	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
 	consumer.ProcessStateChangeNotifications()
 
 	// Verify both authors received notifications
@@ -1070,7 +1070,7 @@ func TestOnReviewFromInitial_NoNotification(t *testing.T) {
 		testutils.WithCommentID(comment.ID),
 	)
 
-	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0)
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
 	consumer.ProcessStateChangeNotifications()
 
 	// Verify NO notification (on_review but not from on_fixes)

@@ -7,3 +7,7 @@ vk:
   token: ""
 database:
   dsn: "devstreamline.db"
+
+# Optional: Override start time for MR processing (format: YYYY-MM-DD)
+# If not set, defaults to 2 days before bot startup
+# start_time: "2025-01-01"
