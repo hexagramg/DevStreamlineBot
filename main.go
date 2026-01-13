@@ -66,6 +66,7 @@ func main() {
 		&models.Repository{}, &models.User{}, &models.Label{}, &models.Milestone{}, &models.MergeRequest{},
 		&models.Chat{}, &models.VKUser{}, &models.VKMessage{}, &models.RepositorySubscription{}, &models.PossibleReviewer{},
 		&models.LabelReviewer{}, &models.RepositorySLA{}, &models.Holiday{}, &models.MRAction{}, &models.MRComment{},
+		&models.DailyDigestPreference{},
 	); err != nil {
 		log.Fatalf("failed to migrate database schemas: %v", err)
 	}
@@ -145,6 +146,10 @@ func main() {
 	// Initialize and start review digest consumer
 	reviewDigestConsumer := consumers.NewReviewDigestConsumer(db, vkBot)
 	reviewDigestConsumer.StartConsumer()
+
+	// Initialize and start personal digest consumer
+	personalDigestConsumer := consumers.NewPersonalDigestConsumer(db, vkBot)
+	personalDigestConsumer.StartConsumer()
 
 	// Run sequentially:
 	// 1. Poll repositories

@@ -348,3 +348,14 @@ type MRComment struct {
 	GitlabCreatedAt    time.Time  `gorm:"not null"`
 	GitlabUpdatedAt    time.Time
 }
+
+// DailyDigestPreference stores user preferences for personal daily digest notifications.
+type DailyDigestPreference struct {
+	gorm.Model
+	VKUserID       uint   `gorm:"uniqueIndex;not null"` // Foreign key to VKUser
+	VKUser         VKUser `gorm:"constraint:OnDelete:CASCADE;"`
+	DMChatID       string `gorm:"not null"`            // Chat ID for sending DM
+	Enabled        bool   `gorm:"default:false"`       // Whether digest is enabled
+	TimezoneOffset int    `gorm:"default:3"`           // Hours from UTC (default +3)
+	LastSentAt     *time.Time                          // Track last send to avoid duplicates
+}

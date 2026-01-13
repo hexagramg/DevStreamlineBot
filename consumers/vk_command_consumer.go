@@ -67,6 +67,8 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleHolidaysCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/sla") {
 		c.handleSLACommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/daily_digest") {
+		c.handleDailyDigestCommand(msg, from)
 	}
 }
 
@@ -863,6 +865,117 @@ func (c *VKCommandConsumer) handleLabelReviewersCommand(msg *botgolang.Message, 
 		reply += fmt.Sprintf(". Not found: %s", strings.Join(notFound, ", "))
 	}
 	c.sendReply(msg, reply)
+}
+
+// handleDailyDigestCommand toggles or configures daily digest for the user.
+// Format: /daily_digest         - Toggle on/off
+//
+//	/daily_digest +3      - Enable with UTC+3 timezone
+//	/daily_digest -5      - Enable with UTC-5 timezone
+//	/daily_digest off     - Disable
+func (c *VKCommandConsumer) handleDailyDigestCommand(msg *botgolang.Message, from botgolang.Contact) {
+	// Require private chat
+	if msg.Chat.Type != "private" {
+		c.sendReply(msg, "The /daily_digest command must be used in a private chat with the bot.")
+		return
+	}
+
+	// Get or create VKUser
+	userID := fmt.Sprint(from.ID)
+	var vkUser models.VKUser
+	vkUserData := models.VKUser{
+		UserID:    userID,
+		FirstName: from.FirstName,
+		LastName:  from.LastName,
+	}
+	if err := c.db.Where(models.VKUser{UserID: userID}).Assign(vkUserData).FirstOrCreate(&vkUser).Error; err != nil {
+		log.Printf("failed to get or create VK user %s: %v", userID, err)
+		c.sendReply(msg, "Failed to process user information. Please try again later.")
+		return
+	}
+
+	// Parse command arguments
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/daily_digest"))
+	chatID := fmt.Sprint(msg.Chat.ID)
+
+	// Get existing preference or prepare new one
+	var pref models.DailyDigestPreference
+	isNew := c.db.Where("vk_user_id = ?", vkUser.ID).First(&pref).Error != nil
+
+	if isNew {
+		pref = models.DailyDigestPreference{
+			VKUserID:       vkUser.ID,
+			DMChatID:       chatID,
+			Enabled:        false,
+			TimezoneOffset: 3, // Default UTC+3
+		}
+	}
+
+	// Always update chat ID in case user is using a different chat
+	pref.DMChatID = chatID
+
+	// Handle different command formats
+	if argStr == "" {
+		// Toggle
+		pref.Enabled = !pref.Enabled
+	} else if argStr == "off" {
+		pref.Enabled = false
+	} else {
+		// Parse timezone offset: +N or -N
+		offset, err := parseTimezoneOffset(argStr)
+		if err != nil {
+			c.sendReply(msg, "Invalid timezone format. Use +N or -N (e.g., +3, -5).")
+			return
+		}
+		pref.TimezoneOffset = offset
+		pref.Enabled = true
+	}
+
+	// Save preference
+	if err := c.db.Save(&pref).Error; err != nil {
+		log.Printf("failed to save daily digest preference for user %s: %v", userID, err)
+		c.sendReply(msg, "Failed to save preferences. Please try again later.")
+		return
+	}
+
+	// Build response
+	status := "disabled"
+	if pref.Enabled {
+		offsetStr := fmt.Sprintf("+%d", pref.TimezoneOffset)
+		if pref.TimezoneOffset < 0 {
+			offsetStr = fmt.Sprintf("%d", pref.TimezoneOffset)
+		}
+		status = fmt.Sprintf("enabled at 10:00 UTC%s", offsetStr)
+	}
+	c.sendReply(msg, fmt.Sprintf("Daily digest is now %s.", status))
+}
+
+// parseTimezoneOffset parses a timezone offset string like "+3" or "-5".
+func parseTimezoneOffset(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 {
+		return 0, fmt.Errorf("invalid offset")
+	}
+
+	sign := 1
+	numStr := s
+	if s[0] == '+' {
+		numStr = s[1:]
+	} else if s[0] == '-' {
+		sign = -1
+		numStr = s[1:]
+	}
+
+	offset, err := strconv.Atoi(numStr)
+	if err != nil {
+		return 0, err
+	}
+
+	if offset < 0 || offset > 14 {
+		return 0, fmt.Errorf("offset out of range")
+	}
+
+	return sign * offset, nil
 }
 
 // formatSLADuration formats a duration for SLA display, returning "not set" for zero values.
