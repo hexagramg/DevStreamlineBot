@@ -105,6 +105,10 @@ func CalculateWorkingTime(db *gorm.DB, repoID uint, start, end time.Time) time.D
 		return 0
 	}
 
+	// Normalize both times to UTC to avoid timezone mismatches
+	start = start.UTC()
+	end = end.UTC()
+
 	// Fetch holidays once
 	var holidays []models.Holiday
 	db.Where("repository_id = ?", repoID).Find(&holidays)
