@@ -221,7 +221,7 @@ func TestGetLabelReviewerGroups_NoLabels(t *testing.T) {
 	mr := mrFactory.Create(repo, author)
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	groups := consumer.getLabelReviewerGroups(&mr)
+	groups := consumer.getLabelReviewerGroups(&mr, nil)
 
 	if groups != nil {
 		t.Errorf("getLabelReviewerGroups with no labels: got %v, want nil", groups)
@@ -240,7 +240,7 @@ func TestGetLabelReviewerGroups_LabelsWithoutReviewers(t *testing.T) {
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend", "frontend"))
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	groups := consumer.getLabelReviewerGroups(&mr)
+	groups := consumer.getLabelReviewerGroups(&mr, nil)
 
 	if groups != nil {
 		t.Errorf("getLabelReviewerGroups with labels but no reviewers: got %v, want nil", groups)
@@ -265,7 +265,7 @@ func TestGetLabelReviewerGroups_ExcludesAuthor(t *testing.T) {
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend"))
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	groups := consumer.getLabelReviewerGroups(&mr)
+	groups := consumer.getLabelReviewerGroups(&mr, nil)
 
 	if len(groups["backend"]) != 1 {
 		t.Fatalf("Expected 1 reviewer in group (author excluded), got %d", len(groups["backend"]))
@@ -293,7 +293,7 @@ func TestGetLabelReviewerGroups_ExcludesVacationUsers(t *testing.T) {
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "frontend"))
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	groups := consumer.getLabelReviewerGroups(&mr)
+	groups := consumer.getLabelReviewerGroups(&mr, nil)
 
 	if len(groups["frontend"]) != 1 {
 		t.Fatalf("Expected 1 reviewer (vacation user excluded), got %d", len(groups["frontend"]))
@@ -321,7 +321,7 @@ func TestGetLabelReviewerGroups_MultipleLabels(t *testing.T) {
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend", "frontend"))
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	groups := consumer.getLabelReviewerGroups(&mr)
+	groups := consumer.getLabelReviewerGroups(&mr, nil)
 
 	if len(groups) != 2 {
 		t.Fatalf("Expected 2 label groups, got %d", len(groups))
@@ -346,7 +346,7 @@ func TestGetDefaultReviewers_EmptyPool(t *testing.T) {
 	mr := mrFactory.Create(repo, author)
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	reviewers := consumer.getDefaultReviewers(&mr)
+	reviewers := consumer.getDefaultReviewers(&mr, nil)
 
 	if len(reviewers) != 0 {
 		t.Errorf("getDefaultReviewers with empty pool: got %d, want 0", len(reviewers))
@@ -370,7 +370,7 @@ func TestGetDefaultReviewers_ExcludesAuthor(t *testing.T) {
 	mr := mrFactory.Create(repo, author)
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	reviewers := consumer.getDefaultReviewers(&mr)
+	reviewers := consumer.getDefaultReviewers(&mr, nil)
 
 	if len(reviewers) != 1 {
 		t.Fatalf("Expected 1 reviewer (author excluded), got %d", len(reviewers))
@@ -398,7 +398,7 @@ func TestGetDefaultReviewers_ExcludesVacationUsers(t *testing.T) {
 	mr := mrFactory.Create(repo, author)
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	reviewers := consumer.getDefaultReviewers(&mr)
+	reviewers := consumer.getDefaultReviewers(&mr, nil)
 
 	if len(reviewers) != 1 {
 		t.Fatalf("Expected 1 reviewer (vacation user excluded), got %d", len(reviewers))
@@ -488,7 +488,7 @@ func TestSelectReviewers_UsesLabelReviewers(t *testing.T) {
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend"))
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	selected := consumer.selectReviewers(&mr, 1)
+	selected := consumer.selectReviewers(&mr, 1, nil)
 
 	if len(selected) != 1 {
 		t.Fatalf("Expected 1 reviewer, got %d", len(selected))
@@ -514,7 +514,7 @@ func TestSelectReviewers_FallsBackToDefaultPool(t *testing.T) {
 	mr := mrFactory.Create(repo, author)
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	selected := consumer.selectReviewers(&mr, 1)
+	selected := consumer.selectReviewers(&mr, 1, nil)
 
 	if len(selected) != 1 {
 		t.Fatalf("Expected 1 reviewer, got %d", len(selected))
@@ -540,8 +540,8 @@ func TestSelectFromLabelGroups_OneLabel(t *testing.T) {
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend"))
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	groups := consumer.getLabelReviewerGroups(&mr)
-	selected := consumer.selectFromLabelGroups(&mr, groups, 1)
+	groups := consumer.getLabelReviewerGroups(&mr, nil)
+	selected := consumer.selectFromLabelGroups(&mr, groups, 1, nil)
 
 	if len(selected) != 1 {
 		t.Fatalf("Expected 1 reviewer, got %d", len(selected))
@@ -569,8 +569,8 @@ func TestSelectFromLabelGroups_TwoLabels(t *testing.T) {
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend", "frontend"))
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	groups := consumer.getLabelReviewerGroups(&mr)
-	selected := consumer.selectFromLabelGroups(&mr, groups, 2)
+	groups := consumer.getLabelReviewerGroups(&mr, nil)
+	selected := consumer.selectFromLabelGroups(&mr, groups, 2, nil)
 
 	if len(selected) != 2 {
 		t.Fatalf("Expected 2 reviewers, got %d", len(selected))
@@ -609,8 +609,8 @@ func TestSelectFromLabelGroups_NoReuseAcrossLabels(t *testing.T) {
 
 	// Run multiple times to ensure no duplicates
 	for i := 0; i < 50; i++ {
-		groups := consumer.getLabelReviewerGroups(&mr)
-		selected := consumer.selectFromLabelGroups(&mr, groups, 2)
+		groups := consumer.getLabelReviewerGroups(&mr, nil)
+		selected := consumer.selectFromLabelGroups(&mr, groups, 2, nil)
 
 		// Check for duplicates
 		seen := make(map[uint]bool)
@@ -643,8 +643,8 @@ func TestSelectFromLabelGroups_FillsFromDefaultPool(t *testing.T) {
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend"))
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
-	groups := consumer.getLabelReviewerGroups(&mr)
-	selected := consumer.selectFromLabelGroups(&mr, groups, 3)
+	groups := consumer.getLabelReviewerGroups(&mr, nil)
+	selected := consumer.selectFromLabelGroups(&mr, groups, 3, nil)
 
 	if len(selected) != 3 {
 		t.Fatalf("Expected 3 reviewers, got %d", len(selected))
@@ -1077,5 +1077,150 @@ func TestOnReviewFromInitial_NoNotification(t *testing.T) {
 	sentMessages := mockBot.GetSentMessages()
 	if len(sentMessages) != 0 {
 		t.Errorf("Expected no messages (on_review from initial, not from on_fixes), got %d", len(sentMessages))
+	}
+}
+
+// ============================================================================
+// Reviewer Exclusion Tests
+// ============================================================================
+
+// TestGetLabelReviewerGroups_ExcludesExistingReviewers tests that excludeUsers filters out existing reviewers.
+func TestGetLabelReviewerGroups_ExcludesExistingReviewers(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithUsername("author"))
+	existingReviewer := userFactory.Create(testutils.WithUsername("existing"))
+	availableReviewer := userFactory.Create(testutils.WithUsername("available"))
+
+	testutils.CreateLabelReviewer(db, repo, "backend", existingReviewer)
+	testutils.CreateLabelReviewer(db, repo, "backend", availableReviewer)
+
+	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend"))
+
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
+
+	// Get groups with existing reviewer excluded
+	groups := consumer.getLabelReviewerGroups(&mr, []models.User{existingReviewer})
+
+	if len(groups["backend"]) != 1 {
+		t.Fatalf("Expected 1 reviewer after exclusion, got %d", len(groups["backend"]))
+	}
+	if groups["backend"][0].ID != availableReviewer.ID {
+		t.Error("Expected only the available reviewer (not existing) in the group")
+	}
+}
+
+// TestGetDefaultReviewers_ExcludesExistingReviewers tests that excludeUsers filters out existing reviewers.
+func TestGetDefaultReviewers_ExcludesExistingReviewers(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	existingReviewer := userFactory.Create()
+	availableReviewer := userFactory.Create()
+
+	testutils.CreatePossibleReviewer(db, repo, existingReviewer)
+	testutils.CreatePossibleReviewer(db, repo, availableReviewer)
+
+	mr := mrFactory.Create(repo, author)
+
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
+
+	// Get reviewers with existing reviewer excluded
+	reviewers := consumer.getDefaultReviewers(&mr, []models.User{existingReviewer})
+
+	if len(reviewers) != 1 {
+		t.Fatalf("Expected 1 reviewer after exclusion, got %d", len(reviewers))
+	}
+	if reviewers[0].ID != availableReviewer.ID {
+		t.Error("Expected only the available reviewer (not existing)")
+	}
+}
+
+// TestSelectReviewers_ExcludesExistingReviewers tests that selectReviewers respects exclusion list.
+func TestSelectReviewers_ExcludesExistingReviewers(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithUsername("author"))
+	existingReviewer := userFactory.Create(testutils.WithUsername("existing"))
+	newReviewer := userFactory.Create(testutils.WithUsername("new"))
+
+	// Only default pool, both users
+	testutils.CreatePossibleReviewer(db, repo, existingReviewer)
+	testutils.CreatePossibleReviewer(db, repo, newReviewer)
+
+	mr := mrFactory.Create(repo, author)
+
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
+
+	// Select 1 reviewer, excluding existingReviewer
+	selected := consumer.selectReviewers(&mr, 1, []models.User{existingReviewer})
+
+	if len(selected) != 1 {
+		t.Fatalf("Expected 1 reviewer selected, got %d", len(selected))
+	}
+	if selected[0].ID != newReviewer.ID {
+		t.Errorf("Expected newReviewer (existing excluded), got %s", selected[0].Username)
+	}
+}
+
+// TestSelectReviewers_LabelBased_ExcludesExistingReviewers tests label-based selection with exclusion.
+func TestSelectReviewers_LabelBased_ExcludesExistingReviewers(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithUsername("author"))
+	existingReviewer := userFactory.Create(testutils.WithUsername("existing"))
+	newReviewer1 := userFactory.Create(testutils.WithUsername("new1"))
+	newReviewer2 := userFactory.Create(testutils.WithUsername("new2"))
+
+	// Backend label has existing + new1
+	testutils.CreateLabelReviewer(db, repo, "backend", existingReviewer)
+	testutils.CreateLabelReviewer(db, repo, "backend", newReviewer1)
+	// Frontend label has new2
+	testutils.CreateLabelReviewer(db, repo, "frontend", newReviewer2)
+
+	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend", "frontend"))
+
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
+
+	// Select 2 reviewers (one from each label), excluding existingReviewer
+	selected := consumer.selectReviewers(&mr, 2, []models.User{existingReviewer})
+
+	if len(selected) != 2 {
+		t.Fatalf("Expected 2 reviewers selected, got %d", len(selected))
+	}
+
+	// Verify existing reviewer is not selected
+	for _, s := range selected {
+		if s.ID == existingReviewer.ID {
+			t.Error("Existing reviewer should be excluded from selection")
+		}
+	}
+
+	// Verify we got one from each label group
+	selectedIDs := make(map[uint]bool)
+	for _, s := range selected {
+		selectedIDs[s.ID] = true
+	}
+	if !selectedIDs[newReviewer1.ID] {
+		t.Error("Expected new1 from backend label")
+	}
+	if !selectedIDs[newReviewer2.ID] {
+		t.Error("Expected new2 from frontend label")
 	}
 }

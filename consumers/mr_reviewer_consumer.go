@@ -76,8 +76,8 @@ func (c *MRReviewerConsumer) StartConsumer() {
 
 // getLabelReviewerGroups returns label reviewers grouped by label name.
 // Only includes labels that the MR has AND have configured reviewers.
-// Filters out users on vacation and the MR author.
-func (c *MRReviewerConsumer) getLabelReviewerGroups(mr *models.MergeRequest) map[string][]models.User {
+// Filters out users on vacation, the MR author, and any users in excludeUsers.
+func (c *MRReviewerConsumer) getLabelReviewerGroups(mr *models.MergeRequest, excludeUsers []models.User) map[string][]models.User {
 	if len(mr.Labels) == 0 {
 		return nil
 	}
@@ -109,9 +109,15 @@ func (c *MRReviewerConsumer) getLabelReviewerGroups(mr *models.MergeRequest) map
 		userIDs = append(userIDs, id)
 	}
 
-	// Fetch users, excluding MR author and users on vacation
+	// Build list of user IDs to exclude (author + excludeUsers)
+	excludeIDs := []uint{mr.AuthorID}
+	for _, u := range excludeUsers {
+		excludeIDs = append(excludeIDs, u.ID)
+	}
+
+	// Fetch users, excluding MR author, users on vacation, and excludeUsers
 	var users []models.User
-	if err := c.db.Where("id IN ? AND id <> ? AND on_vacation = ?", userIDs, mr.AuthorID, false).
+	if err := c.db.Where("id IN ? AND id NOT IN ? AND on_vacation = ?", userIDs, excludeIDs, false).
 		Find(&users).Error; err != nil {
 		log.Printf("failed to fetch label reviewer users: %v", err)
 		return nil
@@ -147,8 +153,8 @@ func (c *MRReviewerConsumer) getLabelReviewerGroups(mr *models.MergeRequest) map
 }
 
 // getDefaultReviewers returns the default reviewer pool for a repository.
-// Filters out users on vacation and the MR author.
-func (c *MRReviewerConsumer) getDefaultReviewers(mr *models.MergeRequest) []models.User {
+// Filters out users on vacation, the MR author, and any users in excludeUsers.
+func (c *MRReviewerConsumer) getDefaultReviewers(mr *models.MergeRequest, excludeUsers []models.User) []models.User {
 	var prs []models.PossibleReviewer
 	if err := c.db.Where("repository_id = ?", mr.RepositoryID).Find(&prs).Error; err != nil {
 		log.Printf("failed to fetch possible reviewers: %v", err)
@@ -164,8 +170,14 @@ func (c *MRReviewerConsumer) getDefaultReviewers(mr *models.MergeRequest) []mode
 		userIDs[i] = pr.UserID
 	}
 
+	// Build list of user IDs to exclude (author + excludeUsers)
+	excludeIDs := []uint{mr.AuthorID}
+	for _, u := range excludeUsers {
+		excludeIDs = append(excludeIDs, u.ID)
+	}
+
 	var users []models.User
-	if err := c.db.Where("id IN ? AND id <> ? AND on_vacation = ?", userIDs, mr.AuthorID, false).
+	if err := c.db.Where("id IN ? AND id NOT IN ? AND on_vacation = ?", userIDs, excludeIDs, false).
 		Find(&users).Error; err != nil {
 		log.Printf("failed to fetch default reviewer users: %v", err)
 		return nil
@@ -180,19 +192,21 @@ func (c *MRReviewerConsumer) getDefaultReviewers(mr *models.MergeRequest) []mode
 //   - If total < minCount, pick additional from combined remaining pool
 //
 // 2. If no label reviewers available, pick minCount from default pool
-func (c *MRReviewerConsumer) selectReviewers(mr *models.MergeRequest, minCount int) []models.User {
+//
+// excludeUsers are filtered out from all pools (used when adding reviewers to MRs that already have some).
+func (c *MRReviewerConsumer) selectReviewers(mr *models.MergeRequest, minCount int, excludeUsers []models.User) []models.User {
 	if minCount <= 0 {
 		minCount = 1
 	}
 
 	// Try label-based selection first
-	labelGroups := c.getLabelReviewerGroups(mr)
+	labelGroups := c.getLabelReviewerGroups(mr, excludeUsers)
 	if len(labelGroups) > 0 {
-		return c.selectFromLabelGroups(mr, labelGroups, minCount)
+		return c.selectFromLabelGroups(mr, labelGroups, minCount, excludeUsers)
 	}
 
 	// Fall back to default pool
-	defaultReviewers := c.getDefaultReviewers(mr)
+	defaultReviewers := c.getDefaultReviewers(mr, excludeUsers)
 	if len(defaultReviewers) == 0 {
 		return nil
 	}
@@ -203,7 +217,7 @@ func (c *MRReviewerConsumer) selectReviewers(mr *models.MergeRequest, minCount i
 // selectFromLabelGroups picks reviewers from label groups:
 // 1. Pick exactly 1 from each group (with no reuse)
 // 2. If total < minCount, pick additional from combined remaining label reviewers + default pool
-func (c *MRReviewerConsumer) selectFromLabelGroups(mr *models.MergeRequest, groups map[string][]models.User, minCount int) []models.User {
+func (c *MRReviewerConsumer) selectFromLabelGroups(mr *models.MergeRequest, groups map[string][]models.User, minCount int, excludeUsers []models.User) []models.User {
 	// Build workload map for weighted selection
 	reviewCounts := c.getRecentReviewCounts(groups)
 
@@ -258,7 +272,7 @@ func (c *MRReviewerConsumer) selectFromLabelGroups(mr *models.MergeRequest, grou
 		}
 
 		// Add default reviewers to the combined pool
-		defaultReviewers := c.getDefaultReviewers(mr)
+		defaultReviewers := c.getDefaultReviewers(mr, excludeUsers)
 		var newUserIDs []uint
 		for _, u := range defaultReviewers {
 			if !selectedSet[u.ID] && !seenInPool[u.ID] {
@@ -504,20 +518,18 @@ func (c *MRReviewerConsumer) formatReviewerMentions(reviewers []models.User) str
 	return strings.Join(mentions, ", ")
 }
 
-// AssignReviewers finds unreviewed MRs, picks reviewers, notifies chats, and marks MR with reviewers.
+// AssignReviewers finds MRs with insufficient reviewers, picks reviewers, notifies chats, and updates MR with reviewers.
 // Supports multiple reviewers based on RepositorySLA.AssignCount setting.
 // Uses label-based priority cascade: label reviewers first, then default pool.
 // Filters out users on vacation.
+// Also handles backfill: if an MR already has some reviewers but fewer than AssignCount, adds more.
 func (c *MRReviewerConsumer) AssignReviewers() {
 	var mrs []models.MergeRequest
-	// Load open, not draft, not merged, without existing reviewers or approvers,
-	// and for repositories that have subscriptions.
-	// Also preload Labels for label-based reviewer selection.
+	// Load open, not draft, not merged MRs for repositories with subscriptions.
+	// Preload existing Reviewers to check if we need to add more.
 	if err := c.db.
-		Preload("Repository").Preload("Author").Preload("Labels").
+		Preload("Repository").Preload("Author").Preload("Labels").Preload("Reviewers").
 		Where("merge_requests.state = ? AND merge_requests.draft = ? AND merge_requests.merged_at IS NULL", "opened", false).
-		Where("NOT EXISTS (SELECT 1 FROM merge_request_reviewers WHERE merge_request_reviewers.merge_request_id = merge_requests.id)").
-		Where("NOT EXISTS (SELECT 1 FROM merge_request_approvers WHERE merge_request_approvers.merge_request_id = merge_requests.id)").
 		Where("EXISTS (SELECT 1 FROM repository_subscriptions WHERE repository_subscriptions.repository_id = merge_requests.repository_id)").
 		Where("merge_requests.gitlab_created_at > ?", c.startTime). // Only process MRs created after consumer start
 		Find(&mrs).Error; err != nil {
@@ -526,30 +538,40 @@ func (c *MRReviewerConsumer) AssignReviewers() {
 	}
 
 	if len(mrs) == 0 {
-		log.Print("No merge requests need reviewers.")
+		log.Print("No open merge requests found.")
 		return
 	}
 
+	processedCount := 0
 	for _, mr := range mrs {
 		// Get minimum number of reviewers to assign from SLA settings
 		minCount := c.getAssignCount(mr.RepositoryID)
+		existingReviewers := mr.Reviewers
+		needed := minCount - len(existingReviewers)
 
-		// Select reviewers using new algorithm:
-		// - If MR has labels with label reviewers: pick 1 from each label, then fill to min
-		// - Otherwise: pick min from default pool
-		reviewers := c.selectReviewers(&mr, minCount)
-		if len(reviewers) == 0 {
+		// Skip if we already have enough reviewers
+		if needed <= 0 {
+			continue
+		}
+
+		isBackfill := len(existingReviewers) > 0
+		log.Printf("MR %d needs %d more reviewer(s) (has %d, min %d)", mr.ID, needed, len(existingReviewers), minCount)
+
+		// Select additional reviewers, excluding existing ones from pools
+		newReviewers := c.selectReviewers(&mr, needed, existingReviewers)
+		if len(newReviewers) == 0 {
 			log.Printf("no available reviewers for repository %d (MR %d)", mr.RepositoryID, mr.ID)
 			continue
 		}
 
-		// Build GitLab reviewer IDs
-		reviewerIDs := make([]int, len(reviewers))
-		for i, r := range reviewers {
+		// Build GitLab reviewer IDs (all reviewers: existing + new)
+		allReviewers := append(existingReviewers, newReviewers...)
+		reviewerIDs := make([]int, len(allReviewers))
+		for i, r := range allReviewers {
 			reviewerIDs[i] = r.GitlabID
 		}
 
-		// Assign reviewers in GitLab
+		// Update reviewers in GitLab
 		if _, _, err := c.glClient.MergeRequests.UpdateMergeRequest(
 			mr.Repository.GitlabID, mr.IID,
 			&gitlab.UpdateMergeRequestOptions{ReviewerIDs: &reviewerIDs},
@@ -576,36 +598,47 @@ func (c *MRReviewerConsumer) AssignReviewers() {
 			}
 		}
 
-		// Prepare reviewer mentions
-		reviewerMentions := c.formatReviewerMentions(reviewers)
+		// Prepare reviewer mentions (only new reviewers for notification)
+		newReviewerMentions := c.formatReviewerMentions(newReviewers)
 
-		// Send notifications
+		// Send notifications with different message format for backfill
 		reviewerLabel := "reviewer"
-		if len(reviewers) > 1 {
+		if len(newReviewers) > 1 {
 			reviewerLabel = "reviewers"
 		}
 		for _, sub := range subs {
-			text := fmt.Sprintf(
-				"%s\n%s\nby @[%s] %s: %s",
-				mr.Title,
-				mr.WebURL,
-				authorMention,
-				reviewerLabel,
-				reviewerMentions,
-			)
+			var text string
+			if isBackfill {
+				text = fmt.Sprintf(
+					"%s\n%s\nAdditional %s: %s",
+					mr.Title,
+					mr.WebURL,
+					reviewerLabel,
+					newReviewerMentions,
+				)
+			} else {
+				text = fmt.Sprintf(
+					"%s\n%s\nby @[%s] %s: %s",
+					mr.Title,
+					mr.WebURL,
+					authorMention,
+					reviewerLabel,
+					newReviewerMentions,
+				)
+			}
 			msg := c.vkBot.NewTextMessage(sub.Chat.ChatID, text)
 			if err := msg.Send(); err != nil {
 				log.Printf("failed to send review assignment: %v", err)
 			}
 		}
 
-		// Mark MR as having reviewers in local DB
-		if err := c.db.Model(&mr).Association("Reviewers").Append(reviewers); err != nil {
+		// Mark MR as having reviewers in local DB (only add new ones)
+		if err := c.db.Model(&mr).Association("Reviewers").Append(newReviewers); err != nil {
 			log.Printf("failed to mark MR reviewers: %v", err)
 		}
 
-		// Send DM to each assigned reviewer
-		for _, reviewer := range reviewers {
+		// Send DM to each newly assigned reviewer
+		for _, reviewer := range newReviewers {
 			c.notifyUserDM(reviewer.Email, fmt.Sprintf(
 				"🔍 New MR for review:\n%s\n%s",
 				mr.Title,
@@ -613,7 +646,12 @@ func (c *MRReviewerConsumer) AssignReviewers() {
 			))
 		}
 
-		log.Printf("Assigned %d reviewer(s) to MR %d: %v", len(reviewers), mr.ID, reviewerIDs)
+		log.Printf("Assigned %d new reviewer(s) to MR %d (total: %d): %v", len(newReviewers), mr.ID, len(allReviewers), reviewerIDs)
+		processedCount++
+	}
+
+	if processedCount == 0 {
+		log.Print("No merge requests need additional reviewers.")
 	}
 }
 
