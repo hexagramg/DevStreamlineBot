@@ -72,6 +72,8 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleDailyDigestCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/add_block_label") {
 		c.handleAddBlockLabelCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/ensure_label") {
+		c.handleEnsureLabelCommand(msg, from)
 	}
 }
 
@@ -1191,6 +1193,110 @@ func (c *VKCommandConsumer) handleAddBlockLabelCommand(msg *botgolang.Message, _
 	if reply == "" {
 		reply = "No repositories were updated."
 	}
+	c.sendReply(msg, reply)
+}
+
+// handleEnsureLabelCommand ensures a label exists in all subscribed repositories.
+// Format: /ensure_label <label_name> <#hexcolor>
+// Creates the label in GitLab if it doesn't exist.
+func (c *VKCommandConsumer) handleEnsureLabelCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	// Get subscribed repositories
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var subs []models.RepositorySubscription
+	c.db.Where("chat_id = ?", chat.ID).Preload("Repository").Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+
+	// Parse command arguments
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/ensure_label"))
+	if argStr == "" {
+		c.sendReply(msg, "Usage: /ensure_label <label_name> <#hexcolor>")
+		return
+	}
+
+	parts := strings.Fields(argStr)
+	if len(parts) < 2 {
+		c.sendReply(msg, "Usage: /ensure_label <label_name> <#hexcolor>")
+		return
+	}
+
+	// Last argument must be hex color
+	color := parts[len(parts)-1]
+	if !strings.HasPrefix(color, "#") || !isValidHexColor(color) {
+		c.sendReply(msg, "Invalid hex color. Use format: #RRGGBB or #RGB")
+		return
+	}
+
+	// Label name is everything except the color
+	labelName := strings.Join(parts[:len(parts)-1], " ")
+
+	var createdRepos []string
+	var existsRepos []string
+	var failedRepos []string
+
+	for _, sub := range subs {
+		repo := sub.Repository
+
+		// Check if label already exists in GitLab
+		labels, _, err := c.glClient.Labels.ListLabels(repo.GitlabID, &gitlab.ListLabelsOptions{
+			Search: gitlab.Ptr(labelName),
+		})
+
+		labelExists := false
+		if err == nil {
+			for _, l := range labels {
+				if l.Name == labelName {
+					labelExists = true
+					break
+				}
+			}
+		}
+
+		if labelExists {
+			existsRepos = append(existsRepos, repo.Name)
+			continue
+		}
+
+		// Create label in GitLab
+		_, _, err = c.glClient.Labels.CreateLabel(repo.GitlabID, &gitlab.CreateLabelOptions{
+			Name:  gitlab.Ptr(labelName),
+			Color: gitlab.Ptr(color),
+		})
+		if err != nil {
+			log.Printf("failed to create label %s in repo %d: %v", labelName, repo.GitlabID, err)
+			failedRepos = append(failedRepos, repo.Name)
+			continue
+		}
+
+		createdRepos = append(createdRepos, repo.Name)
+	}
+
+	// Build response message
+	var parts2 []string
+	if len(createdRepos) > 0 {
+		parts2 = append(parts2, fmt.Sprintf("Created: %s", strings.Join(createdRepos, ", ")))
+	}
+	if len(existsRepos) > 0 {
+		parts2 = append(parts2, fmt.Sprintf("Already exists: %s", strings.Join(existsRepos, ", ")))
+	}
+	if len(failedRepos) > 0 {
+		parts2 = append(parts2, fmt.Sprintf("Failed: %s", strings.Join(failedRepos, ", ")))
+	}
+
+	if len(parts2) == 0 {
+		c.sendReply(msg, "No repositories were processed.")
+		return
+	}
+
+	reply := fmt.Sprintf("Label '%s' (%s):\n%s", labelName, color, strings.Join(parts2, "\n"))
 	c.sendReply(msg, reply)
 }
 
