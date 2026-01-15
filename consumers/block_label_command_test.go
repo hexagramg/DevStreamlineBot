@@ -142,3 +142,124 @@ func TestIsValidHexColor_EdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestParseLabelSpecs_SingleLabel(t *testing.T) {
+	specs := parseLabelSpecs("blocked")
+	if len(specs) != 1 {
+		t.Fatalf("expected 1 spec, got %d", len(specs))
+	}
+	if specs[0].name != "blocked" {
+		t.Errorf("expected name 'blocked', got %q", specs[0].name)
+	}
+	if specs[0].color != "#dc143c" {
+		t.Errorf("expected default color '#dc143c', got %q", specs[0].color)
+	}
+}
+
+func TestParseLabelSpecs_SingleLabelWithColor(t *testing.T) {
+	specs := parseLabelSpecs("blocked #ff0000")
+	if len(specs) != 1 {
+		t.Fatalf("expected 1 spec, got %d", len(specs))
+	}
+	if specs[0].name != "blocked" {
+		t.Errorf("expected name 'blocked', got %q", specs[0].name)
+	}
+	if specs[0].color != "#ff0000" {
+		t.Errorf("expected color '#ff0000', got %q", specs[0].color)
+	}
+}
+
+func TestParseLabelSpecs_MultipleLabels(t *testing.T) {
+	specs := parseLabelSpecs("blocked, wip, hold")
+	if len(specs) != 3 {
+		t.Fatalf("expected 3 specs, got %d", len(specs))
+	}
+	expected := []string{"blocked", "wip", "hold"}
+	for i, name := range expected {
+		if specs[i].name != name {
+			t.Errorf("spec[%d]: expected name %q, got %q", i, name, specs[i].name)
+		}
+		if specs[i].color != "#dc143c" {
+			t.Errorf("spec[%d]: expected default color, got %q", i, specs[i].color)
+		}
+	}
+}
+
+func TestParseLabelSpecs_MultipleLabelsWithMixedColors(t *testing.T) {
+	specs := parseLabelSpecs("blocked #ff0000, wip, hold #ffa500")
+	if len(specs) != 3 {
+		t.Fatalf("expected 3 specs, got %d", len(specs))
+	}
+	if specs[0].name != "blocked" || specs[0].color != "#ff0000" {
+		t.Errorf("spec[0]: expected {blocked, #ff0000}, got {%s, %s}", specs[0].name, specs[0].color)
+	}
+	if specs[1].name != "wip" || specs[1].color != "#dc143c" {
+		t.Errorf("spec[1]: expected {wip, #dc143c}, got {%s, %s}", specs[1].name, specs[1].color)
+	}
+	if specs[2].name != "hold" || specs[2].color != "#ffa500" {
+		t.Errorf("spec[2]: expected {hold, #ffa500}, got {%s, %s}", specs[2].name, specs[2].color)
+	}
+}
+
+func TestParseLabelSpecs_EmptyEntries(t *testing.T) {
+	specs := parseLabelSpecs("blocked,, wip")
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 specs, got %d", len(specs))
+	}
+	if specs[0].name != "blocked" {
+		t.Errorf("spec[0]: expected 'blocked', got %q", specs[0].name)
+	}
+	if specs[1].name != "wip" {
+		t.Errorf("spec[1]: expected 'wip', got %q", specs[1].name)
+	}
+}
+
+func TestParseLabelSpecs_ExtraWhitespace(t *testing.T) {
+	specs := parseLabelSpecs("  blocked  #ff0000 ,  wip  ")
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 specs, got %d", len(specs))
+	}
+	if specs[0].name != "blocked" || specs[0].color != "#ff0000" {
+		t.Errorf("spec[0]: expected {blocked, #ff0000}, got {%s, %s}", specs[0].name, specs[0].color)
+	}
+	if specs[1].name != "wip" || specs[1].color != "#dc143c" {
+		t.Errorf("spec[1]: expected {wip, #dc143c}, got {%s, %s}", specs[1].name, specs[1].color)
+	}
+}
+
+func TestParseLabelSpecs_InvalidColorUsesDefault(t *testing.T) {
+	specs := parseLabelSpecs("blocked #xyz")
+	if len(specs) != 1 {
+		t.Fatalf("expected 1 spec, got %d", len(specs))
+	}
+	if specs[0].name != "blocked" {
+		t.Errorf("expected name 'blocked', got %q", specs[0].name)
+	}
+	if specs[0].color != "#dc143c" {
+		t.Errorf("expected default color when invalid color given, got %q", specs[0].color)
+	}
+}
+
+func TestParseLabelSpecs_EmptyInput(t *testing.T) {
+	specs := parseLabelSpecs("")
+	if len(specs) != 0 {
+		t.Errorf("expected 0 specs for empty input, got %d", len(specs))
+	}
+}
+
+func TestParseLabelSpecs_OnlyCommas(t *testing.T) {
+	specs := parseLabelSpecs(",,")
+	if len(specs) != 0 {
+		t.Errorf("expected 0 specs for only commas, got %d", len(specs))
+	}
+}
+
+func TestParseLabelSpecs_ThreeCharColor(t *testing.T) {
+	specs := parseLabelSpecs("blocked #f00")
+	if len(specs) != 1 {
+		t.Fatalf("expected 1 spec, got %d", len(specs))
+	}
+	if specs[0].color != "#f00" {
+		t.Errorf("expected 3-char color '#f00', got %q", specs[0].color)
+	}
+}

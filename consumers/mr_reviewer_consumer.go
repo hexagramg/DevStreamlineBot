@@ -496,6 +496,9 @@ func (c *MRReviewerConsumer) AssignReviewers() {
 		if utils.HasReleaseLabel(c.db, &mr) {
 			continue
 		}
+		if utils.IsMRBlocked(c.db, &mr) {
+			continue
+		}
 
 		minCount := c.getAssignCount(mr.RepositoryID)
 		existingReviewers := mr.Reviewers

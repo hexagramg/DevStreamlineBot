@@ -146,6 +146,52 @@ func (m *MockUsersService) GetUser(user int, opt gitlab.GetUsersOptions, options
 	return nil, NewMockResponse(0), nil
 }
 
+// MockLabelsService is a mock implementation of GitLabLabelsService.
+type MockLabelsService struct {
+	ListLabelsFunc   func(pid interface{}, opt *gitlab.ListLabelsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.Label, *gitlab.Response, error)
+	CreateLabelFunc  func(pid interface{}, opt *gitlab.CreateLabelOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Label, *gitlab.Response, error)
+
+	// Call tracking
+	ListLabelsCalls   []ListLabelsCall
+	CreateLabelCalls  []CreateLabelCall
+}
+
+// ListLabelsCall tracks a call to ListLabels.
+type ListLabelsCall struct {
+	PID interface{}
+	Opt *gitlab.ListLabelsOptions
+}
+
+// CreateLabelCall tracks a call to CreateLabel.
+type CreateLabelCall struct {
+	PID interface{}
+	Opt *gitlab.CreateLabelOptions
+}
+
+// ListLabels implements the interface method.
+func (m *MockLabelsService) ListLabels(pid interface{}, opt *gitlab.ListLabelsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.Label, *gitlab.Response, error) {
+	m.ListLabelsCalls = append(m.ListLabelsCalls, ListLabelsCall{
+		PID: pid,
+		Opt: opt,
+	})
+	if m.ListLabelsFunc != nil {
+		return m.ListLabelsFunc(pid, opt, options...)
+	}
+	return nil, NewMockResponse(0), nil
+}
+
+// CreateLabel implements the interface method.
+func (m *MockLabelsService) CreateLabel(pid interface{}, opt *gitlab.CreateLabelOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Label, *gitlab.Response, error) {
+	m.CreateLabelCalls = append(m.CreateLabelCalls, CreateLabelCall{
+		PID: pid,
+		Opt: opt,
+	})
+	if m.CreateLabelFunc != nil {
+		return m.CreateLabelFunc(pid, opt, options...)
+	}
+	return &gitlab.Label{}, NewMockResponse(0), nil
+}
+
 // NewMockResponse creates a mock GitLab API response with the specified next page.
 // Set nextPage to 0 to indicate no more pages.
 func NewMockResponse(nextPage int) *gitlab.Response {

@@ -1102,88 +1102,70 @@ func (c *VKCommandConsumer) handleAddBlockLabelCommand(msg *botgolang.Message, _
 
 	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/add_block_label"))
 	if argStr == "" {
-		c.sendReply(msg, "Usage: /add_block_label <label_name> [#hexcolor]\nDefault color: #dc143c (crimson)")
+		c.sendReply(msg, "Usage: /add_block_label <label1> [#color1], <label2> [#color2], ...\nDefault color: #dc143c (crimson)")
 		return
 	}
 
-	parts := strings.Fields(argStr)
-	labelName := parts[0]
-	color := "#dc143c"
-
-	if len(parts) >= 2 {
-		lastPart := parts[len(parts)-1]
-		if strings.HasPrefix(lastPart, "#") && isValidHexColor(lastPart) {
-			color = lastPart
-			if len(parts) > 2 {
-				labelName = strings.Join(parts[:len(parts)-1], " ")
-			}
-		} else {
-			labelName = argStr
-		}
+	labelSpecs := parseLabelSpecs(argStr)
+	if len(labelSpecs) == 0 {
+		c.sendReply(msg, "Usage: /add_block_label <label1> [#color1], <label2> [#color2], ...\nDefault color: #dc143c (crimson)")
+		return
 	}
 
 	var successRepos []string
-	var failedRepos []string
 
 	for _, sub := range subs {
 		repo := sub.Repository
 
-		labels, _, err := c.glClient.Labels.ListLabels(repo.GitlabID, &gitlab.ListLabelsOptions{
-			Search: gitlab.Ptr(labelName),
-		})
+		for _, spec := range labelSpecs {
+			labels, _, err := c.glClient.Labels.ListLabels(repo.GitlabID, &gitlab.ListLabelsOptions{
+				Search: gitlab.Ptr(spec.name),
+			})
 
-		labelExists := false
-		if err == nil {
-			for _, l := range labels {
-				if l.Name == labelName {
-					labelExists = true
-					break
+			labelExists := false
+			if err == nil {
+				for _, l := range labels {
+					if l.Name == spec.name {
+						labelExists = true
+						break
+					}
 				}
 			}
-		}
 
-		if !labelExists {
-			_, _, err := c.glClient.Labels.CreateLabel(repo.GitlabID, &gitlab.CreateLabelOptions{
-				Name:  gitlab.Ptr(labelName),
-				Color: gitlab.Ptr(color),
-			})
-			if err != nil {
-				log.Printf("failed to create label %s in repo %d: %v", labelName, repo.GitlabID, err)
-				failedRepos = append(failedRepos, repo.Name)
-				continue
+			if !labelExists {
+				_, _, err := c.glClient.Labels.CreateLabel(repo.GitlabID, &gitlab.CreateLabelOptions{
+					Name:  gitlab.Ptr(spec.name),
+					Color: gitlab.Ptr(spec.color),
+				})
+				if err != nil {
+					log.Printf("failed to create label %s in repo %d: %v", spec.name, repo.GitlabID, err)
+					c.sendReply(msg, fmt.Sprintf("Failed to create label '%s' in repo %s: %v", spec.name, repo.Name, err))
+					return
+				}
 			}
-		}
 
-		blockLabel := models.BlockLabel{
-			RepositoryID: repo.ID,
-			LabelName:    labelName,
-		}
-		if err := c.db.FirstOrCreate(&blockLabel, models.BlockLabel{
-			RepositoryID: repo.ID,
-			LabelName:    labelName,
-		}).Error; err != nil {
-			log.Printf("failed to save block label %s for repo %d: %v", labelName, repo.ID, err)
-			failedRepos = append(failedRepos, repo.Name)
-			continue
+			blockLabel := models.BlockLabel{
+				RepositoryID: repo.ID,
+				LabelName:    spec.name,
+			}
+			if err := c.db.FirstOrCreate(&blockLabel, models.BlockLabel{
+				RepositoryID: repo.ID,
+				LabelName:    spec.name,
+			}).Error; err != nil {
+				log.Printf("failed to save block label %s for repo %d: %v", spec.name, repo.ID, err)
+				c.sendReply(msg, fmt.Sprintf("Failed to save block label '%s' for repo %s: %v", spec.name, repo.Name, err))
+				return
+			}
 		}
 
 		successRepos = append(successRepos, repo.Name)
 	}
 
-	var reply string
-	if len(successRepos) > 0 {
-		reply = fmt.Sprintf("Block label '%s' added for: %s", labelName, strings.Join(successRepos, ", "))
+	labelNames := make([]string, len(labelSpecs))
+	for i, spec := range labelSpecs {
+		labelNames[i] = spec.name
 	}
-	if len(failedRepos) > 0 {
-		if reply != "" {
-			reply += "\n"
-		}
-		reply += fmt.Sprintf("Failed for: %s", strings.Join(failedRepos, ", "))
-	}
-	if reply == "" {
-		reply = "No repositories were updated."
-	}
-	c.sendReply(msg, reply)
+	c.sendReply(msg, fmt.Sprintf("Block label(s) '%s' added for: %s", strings.Join(labelNames, ", "), strings.Join(successRepos, ", ")))
 }
 
 func (c *VKCommandConsumer) handleAddReleaseLabelCommand(msg *botgolang.Message, _ botgolang.Contact) {
@@ -1379,6 +1361,30 @@ func (c *VKCommandConsumer) handleEnsureLabelCommand(msg *botgolang.Message, _ b
 
 	reply := fmt.Sprintf("Label '%s' (%s):\n%s", labelName, color, strings.Join(parts2, "\n"))
 	c.sendReply(msg, reply)
+}
+
+type labelSpec struct {
+	name  string
+	color string
+}
+
+func parseLabelSpecs(argStr string) []labelSpec {
+	entries := strings.Split(argStr, ",")
+	var specs []labelSpec
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.Fields(entry)
+		name := parts[0]
+		color := "#dc143c"
+		if len(parts) >= 2 && strings.HasPrefix(parts[1], "#") && isValidHexColor(parts[1]) {
+			color = parts[1]
+		}
+		specs = append(specs, labelSpec{name: name, color: color})
+	}
+	return specs
 }
 
 func isValidHexColor(s string) bool {
