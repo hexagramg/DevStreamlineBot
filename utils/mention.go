@@ -116,7 +116,7 @@ func BuildReviewDigest(db *gorm.DB, mrs []models.MergeRequest) string {
 		}
 		sanitizedTitle := SanitizeTitle(mr.Title)
 		sb.WriteString(
-			fmt.Sprintf("\n- %s\n  %s\n  author: @[%s] reviewer: @[%s]\n", sanitizedTitle, mr.WebURL, authorMention, reviewerMention),
+			fmt.Sprintf("\n- %s\n  %s\n  author: @[%s] reviewer: @[%s]\n\n", sanitizedTitle, mr.WebURL, authorMention, reviewerMention),
 		)
 	}
 	return sb.String()
@@ -206,7 +206,7 @@ func writeDigestEntry(sb *strings.Builder, dmr *DigestMR, mentionMap map[uint]st
 	sb.WriteString(fmt.Sprintf("- %s%s\n", sanitizedTitle, stateIndicator))
 	sb.WriteString(fmt.Sprintf("  %s\n", mr.WebURL))
 	sb.WriteString(fmt.Sprintf("  by @[%s] → %s\n", authorMention, reviewerStr))
-	sb.WriteString(fmt.Sprintf("  ⏱ %s | SLA: %s\n", timeStr, slaStatus))
+	sb.WriteString(fmt.Sprintf("  ⏱ %s | SLA: %s\n\n", timeStr, slaStatus))
 }
 
 func formatSLAFromDigest(dmr *DigestMR) string {
@@ -300,5 +300,5 @@ func writeReleaseEntry(sb *strings.Builder, dmr *DigestMR, mentionMap map[uint]s
 
 	sb.WriteString(fmt.Sprintf("- %s\n", SanitizeTitle(mr.Title)))
 	sb.WriteString(fmt.Sprintf("  %s\n", mr.WebURL))
-	sb.WriteString(fmt.Sprintf("  by @[%s]\n", authorMention))
+	sb.WriteString(fmt.Sprintf("  by @[%s]\n\n", authorMention))
 }
