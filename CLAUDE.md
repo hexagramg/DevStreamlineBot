@@ -143,8 +143,9 @@ MR states are derived dynamically based on DB data (not stored as a field):
 - `/unsubscribe <repo_id>` - Unsubscribe from repo
 - `/reviewers user1,user2` - Set default reviewer pool for subscribed repos
 - `/reviewers` - Clear default reviewers
-- `/reviews [username]` - List pending reviews for user
+- `/actions [username]` - List pending actions (reviews, fixes, author MRs) for a user
 - `/send_digest` - Send immediate review digest
+- `/daily_digest [+/-N]` - Toggle personal daily digest at 10:00 in your timezone (DM only)
 - `/get_mr_info <path!iid>` - Get MR details (e.g., `intdev/myapp!123`)
 
 ### Reviewer Management
@@ -162,8 +163,15 @@ MR states are derived dynamically based on DB data (not stored as a field):
 - `/holidays date1 date2 ...` - Add holidays (format: DD.MM.YYYY)
 - `/holidays remove date1 date2 ...` - Remove specific holidays
 
+### Label Management
+- `/add_block_label <label> [#color]` - Add block label(s) to repos (default: #dc143c)
+- `/add_release_label <label> [#color]` - Add release label to repos (default: #808080)
+- `/ensure_label <label> <#color>` - Create label in GitLab if it doesn't exist
+
 ### Release Management
 - `/auto_release_branch <prefix> : <dev_branch>` - Enable auto-release branches (e.g., `release : develop`)
 - `/auto_release_branch` - Disable auto-release branches for subscribed repos
+- `/release_managers user1,user2` - Set release managers for subscribed repos
+- `/release_managers` - List current release managers
 
-**Note**: Requires a release label to be configured. Creates branches named `{prefix}_{YYYY-MM-DD}_{sha[:6]}`, automatically retargets MRs (except blocked ones), and maintains release MR descriptions with included changes.
+**Note**: Requires a release label (`/add_release_label`). Creates branches named `{prefix}_{YYYY-MM-DD}_{sha[:6]}`, automatically retargets MRs (except blocked ones), and maintains release MR descriptions with included changes.

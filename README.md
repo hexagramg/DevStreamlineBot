@@ -106,9 +106,9 @@ Add the bot to a VK Teams chat and use these commands:
 | `/unsubscribe <repo_id>` | Unsubscribe from a project |
 | `/reviewers user1,user2` | Set default reviewer pool for subscribed repos |
 | `/reviewers` | Clear default reviewers |
-| `/reviews` | List your pending reviews |
-| `/reviews <username>` | List pending reviews for a specific user |
+| `/actions [username]` | List pending actions (reviews, fixes, author MRs) for a user |
 | `/send_digest` | Send immediate review digest to chat |
+| `/daily_digest [+/-N]` | Toggle personal daily digest at 10:00 in your timezone (DM only) |
 | `/get_mr_info <path!iid>` | Get MR details (e.g., `/get_mr_info group/project!123`) |
 
 ### Reviewer Management
@@ -132,14 +132,24 @@ Add the bot to a VK Teams chat and use these commands:
 | `/holidays date1 date2 ...` | Add holidays (format: DD.MM.YYYY) |
 | `/holidays remove date1 ...` | Remove specific holidays |
 
+### Label Management
+
+| Command | Description |
+|---------|-------------|
+| `/add_block_label <label> [#color]` | Add block label(s) to repos (default: #dc143c). MRs with block labels are excluded from auto-retargeting |
+| `/add_release_label <label> [#color]` | Add release label to repos (default: #808080). Required for auto-release branches |
+| `/ensure_label <label> <#color>` | Create label in GitLab if it doesn't exist |
+
 ### Release Management
 
 | Command | Description |
 |---------|-------------|
 | `/auto_release_branch <prefix> : <dev_branch>` | Enable auto-release branches (e.g., `/auto_release_branch release : develop`) |
 | `/auto_release_branch` | Disable auto-release branches for subscribed repos |
+| `/release_managers user1,user2` | Set release managers for subscribed repos |
+| `/release_managers` | List current release managers |
 
-**Note**: Auto-release branch functionality requires a release label to be configured for the repository.
+**Note**: Auto-release branch functionality requires a release label to be configured (`/add_release_label`).
 
 ## How It Works
 
