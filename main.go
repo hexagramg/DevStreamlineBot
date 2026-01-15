@@ -66,7 +66,7 @@ func main() {
 		&models.Repository{}, &models.User{}, &models.Label{}, &models.Milestone{}, &models.MergeRequest{},
 		&models.Chat{}, &models.VKUser{}, &models.VKMessage{}, &models.RepositorySubscription{}, &models.PossibleReviewer{},
 		&models.LabelReviewer{}, &models.RepositorySLA{}, &models.Holiday{}, &models.MRAction{}, &models.MRComment{},
-		&models.DailyDigestPreference{}, &models.BlockLabel{},
+		&models.DailyDigestPreference{}, &models.BlockLabel{}, &models.ReleaseManager{}, &models.ReleaseLabel{},
 	); err != nil {
 		log.Fatalf("failed to migrate database schemas: %v", err)
 	}

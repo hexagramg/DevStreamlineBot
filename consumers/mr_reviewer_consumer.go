@@ -71,6 +71,7 @@ func (c *MRReviewerConsumer) StartConsumer() {
 			c.AssignReviewers()
 			c.ProcessStateChangeNotifications()
 			c.ProcessReviewerRemovalNotifications()
+			c.ProcessFullyApprovedNotifications()
 		}
 	}()
 }
@@ -553,6 +554,11 @@ func (c *MRReviewerConsumer) AssignReviewers() {
 
 	processedCount := 0
 	for _, mr := range mrs {
+		// Skip MRs with release labels (completely ignored)
+		if utils.HasReleaseLabel(c.db, &mr) {
+			continue
+		}
+
 		// Get minimum number of reviewers to assign from SLA settings
 		minCount := c.getAssignCount(mr.RepositoryID)
 		existingReviewers := mr.Reviewers
@@ -703,6 +709,49 @@ func (c *MRReviewerConsumer) ProcessReviewerRemovalNotifications() {
 			action.MergeRequest.Title,
 			action.MergeRequest.WebURL,
 		))
+		c.markActionNotified(action.ID)
+	}
+}
+
+// ProcessFullyApprovedNotifications sends DMs to release managers when MRs are fully approved.
+// Called periodically from the main consumer loop.
+func (c *MRReviewerConsumer) ProcessFullyApprovedNotifications() {
+	var actions []models.MRAction
+	err := c.db.
+		Preload("MergeRequest").
+		Preload("MergeRequest.Repository").
+		Where("notified = ? AND action_type = ?", false, models.ActionFullyApproved).
+		Order("timestamp ASC").
+		Limit(100).
+		Find(&actions).Error
+	if err != nil {
+		log.Printf("failed to fetch unnotified fully approved actions: %v", err)
+		return
+	}
+
+	for _, action := range actions {
+		mr := action.MergeRequest
+
+		// Find release managers for this repository
+		var releaseManagers []models.ReleaseManager
+		if err := c.db.Preload("User").Where("repository_id = ?", mr.RepositoryID).Find(&releaseManagers).Error; err != nil {
+			log.Printf("failed to fetch release managers for repo %d: %v", mr.RepositoryID, err)
+			c.markActionNotified(action.ID)
+			continue
+		}
+
+		// Send DM to each release manager
+		for _, rm := range releaseManagers {
+			if rm.User.Email == "" {
+				continue
+			}
+			c.notifyUserDM(rm.User.Email, fmt.Sprintf(
+				"✅ MR ready for release:\n%s\n%s\nAll reviewers approved",
+				mr.Title,
+				mr.WebURL,
+			))
+		}
+
 		c.markActionNotified(action.ID)
 	}
 }

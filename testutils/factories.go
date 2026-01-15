@@ -37,6 +37,8 @@ func SetupTestDB(t *testing.T) *gorm.DB {
 		&models.MRAction{},
 		&models.MRComment{},
 		&models.BlockLabel{},
+		&models.ReleaseLabel{},
+		&models.ReleaseManager{},
 	)
 	if err != nil {
 		t.Fatalf("failed to migrate test database: %v", err)
@@ -421,4 +423,29 @@ func CreateBlockLabelAction(db *gorm.DB, mr models.MergeRequest, actionType mode
 	}
 	db.Create(&action)
 	return action
+}
+
+// CreateReleaseLabel creates a release label for a repository.
+func CreateReleaseLabel(db *gorm.DB, repo models.Repository, labelName string) models.ReleaseLabel {
+	rl := models.ReleaseLabel{
+		RepositoryID: repo.ID,
+		LabelName:    labelName,
+	}
+	db.Create(&rl)
+	return rl
+}
+
+// CreateReleaseManager creates a release manager assignment for a repository.
+func CreateReleaseManager(db *gorm.DB, repo models.Repository, user models.User) models.ReleaseManager {
+	rm := models.ReleaseManager{
+		RepositoryID: repo.ID,
+		UserID:       user.ID,
+	}
+	db.Create(&rm)
+	return rm
+}
+
+// AssignApprovers assigns approvers to an MR.
+func AssignApprovers(db *gorm.DB, mr *models.MergeRequest, approvers ...models.User) {
+	db.Model(mr).Association("Approvers").Append(approvers)
 }

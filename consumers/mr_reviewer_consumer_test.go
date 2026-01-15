@@ -1345,3 +1345,117 @@ func TestProcessReviewerRemovalNotifications_AlreadyNotified(t *testing.T) {
 		t.Errorf("Expected no messages for already notified action, got %d", len(sentMessages))
 	}
 }
+
+// ============================================================================
+// Release Label Exclusion Tests
+// ============================================================================
+// Note: AssignReviewers() calls utils.HasReleaseLabel() to skip release-labeled MRs.
+// The HasReleaseLabel function is thoroughly tested in utils/dbutils_test.go.
+// These tests verify that selectReviewers still works correctly for normal MRs,
+// confirming the release label filtering doesn't break the selection logic.
+
+// TestSelectReviewers_NormalMR_WithReleaseLabelConfigured verifies selection works for normal MRs
+// even when release labels are configured for the repository.
+func TestSelectReviewers_NormalMR_WithReleaseLabelConfigured(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithUsername("author"))
+	reviewer1 := userFactory.Create(testutils.WithUsername("reviewer1"))
+	reviewer2 := userFactory.Create(testutils.WithUsername("reviewer2"))
+
+	// Configure reviewers
+	testutils.CreatePossibleReviewer(db, repo, reviewer1)
+	testutils.CreatePossibleReviewer(db, repo, reviewer2)
+
+	// Configure release label (but MR doesn't have it)
+	testutils.CreateReleaseLabel(db, repo, "release")
+
+	// MR without release label
+	mr := mrFactory.Create(repo, author)
+
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
+	selected := consumer.selectReviewers(&mr, 2, nil)
+
+	if len(selected) != 2 {
+		t.Errorf("Expected 2 reviewers selected for normal MR, got %d", len(selected))
+	}
+}
+
+// TestSelectReviewers_MRWithReleaseLabel_StillSelectsReviewers verifies selectReviewers
+// itself doesn't filter by release labels (that's done in AssignReviewers).
+// This test documents the separation of concerns.
+func TestSelectReviewers_MRWithReleaseLabel_StillSelectsReviewers(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithUsername("author"))
+	reviewer := userFactory.Create(testutils.WithUsername("reviewer"))
+
+	testutils.CreatePossibleReviewer(db, repo, reviewer)
+	testutils.CreateReleaseLabel(db, repo, "release")
+
+	// MR WITH release label
+	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "release"))
+
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
+
+	// selectReviewers doesn't check release labels - that's AssignReviewers' job
+	// This verifies the separation of concerns
+	selected := consumer.selectReviewers(&mr, 1, nil)
+
+	// Should still return reviewers (release label filtering is done in AssignReviewers)
+	if len(selected) != 1 {
+		t.Errorf("selectReviewers should return reviewers regardless of release label, got %d", len(selected))
+	}
+}
+
+// TestSelectReviewers_MixedLabels_IgnoresReleaseLabel verifies that selectReviewers
+// correctly handles MRs with both regular labels and release labels.
+func TestSelectReviewers_MixedLabels_IgnoresReleaseLabel(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithUsername("author"))
+	backendReviewer := userFactory.Create(testutils.WithUsername("backend_reviewer"))
+	defaultReviewer := userFactory.Create(testutils.WithUsername("default_reviewer"))
+
+	// Label reviewer for "backend" label
+	testutils.CreateLabelReviewer(db, repo, "backend", backendReviewer)
+	// Default reviewer
+	testutils.CreatePossibleReviewer(db, repo, defaultReviewer)
+	// Configure release label
+	testutils.CreateReleaseLabel(db, repo, "release")
+
+	// MR with both backend and release labels
+	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "backend", "release"))
+
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
+	selected := consumer.selectReviewers(&mr, 2, nil)
+
+	// Should select from backend label reviewers and fill from default pool
+	if len(selected) != 2 {
+		t.Errorf("Expected 2 reviewers selected, got %d", len(selected))
+	}
+
+	// Verify backend reviewer was selected (label-based)
+	backendSelected := false
+	for _, s := range selected {
+		if s.ID == backendReviewer.ID {
+			backendSelected = true
+			break
+		}
+	}
+	if !backendSelected {
+		t.Error("Expected backend reviewer to be selected via label matching")
+	}
+}

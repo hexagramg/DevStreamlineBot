@@ -72,8 +72,12 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleDailyDigestCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/add_block_label") {
 		c.handleAddBlockLabelCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/add_release_label") {
+		c.handleAddReleaseLabelCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/ensure_label") {
 		c.handleEnsureLabelCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/release_managers") {
+		c.handleReleaseManagersCommand(msg, from)
 	}
 }
 
@@ -403,6 +407,123 @@ func (c *VKCommandConsumer) handleReviewersCommand(msg *botgolang.Message, _ bot
 	c.sendReply(msg, replyText)
 }
 
+// handleReleaseManagersCommand processes the /release_managers command to set or clear release managers.
+// Format: /release_managers                -> show current release managers
+//
+//	/release_managers user1,user2,... -> set release managers by GitLab username
+func (c *VKCommandConsumer) handleReleaseManagersCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	// Determine current repository by chat subscription
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found in subscriptions")
+		return
+	}
+	var subs []models.RepositorySubscription
+	c.db.Preload("Repository").Where("chat_id = ?", chat.ID).Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+	// Gather all repository IDs and names for subscriptions
+	repoIDs := make([]uint, len(subs))
+	repoNames := make([]string, len(subs))
+	for i, s := range subs {
+		repoIDs[i] = s.Repository.ID
+		repoNames[i] = s.Repository.Name
+	}
+
+	// Parse command args
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/release_managers"))
+	if argStr == "" {
+		// Show current release managers
+		var managers []models.ReleaseManager
+		c.db.Preload("User").Where("repository_id IN ?", repoIDs).Find(&managers)
+		if len(managers) == 0 {
+			c.sendReply(msg, "No release managers configured. Use /release_managers user1,user2,... to set.")
+			return
+		}
+		// Group by unique usernames
+		usernames := make(map[string]bool)
+		for _, m := range managers {
+			usernames[m.User.Username] = true
+		}
+		var names []string
+		for u := range usernames {
+			names = append(names, u)
+		}
+		c.sendReply(msg, fmt.Sprintf("Current release managers: %s", strings.Join(names, ", ")))
+		return
+	}
+
+	// Clear existing release managers for all subscribed repositories
+	if err := c.db.Where("repository_id IN ?", repoIDs).Delete(&models.ReleaseManager{}).Error; err != nil {
+		c.sendReply(msg, "Failed to clear existing release managers")
+		return
+	}
+
+	// Set release managers list for each repository
+	names := strings.Split(argStr, ",")
+	var added []string
+	var notFoundUsers []string
+	for _, name := range names {
+		uname := strings.TrimSpace(name)
+		if uname == "" {
+			continue
+		}
+
+		var user models.User
+		// Try to find user in DB first
+		err := c.db.Where("username = ?", uname).First(&user).Error
+
+		if err != nil { // Not found in DB or other error
+			if gorm.ErrRecordNotFound == err { // Specifically not found, try fetching from GitLab
+				users, _, glErr := c.glClient.Users.ListUsers(&gitlab.ListUsersOptions{Username: gitlab.Ptr(uname)})
+				if glErr != nil || len(users) == 0 {
+					log.Printf("User %s not found in GitLab or API error: %v", uname, glErr)
+					notFoundUsers = append(notFoundUsers, uname)
+					continue // Skip this user
+				}
+				glUser := users[0]
+				userData := models.User{
+					GitlabID:  glUser.ID,
+					Username:  glUser.Username,
+					Name:      glUser.Name,
+					State:     glUser.State,
+					CreatedAt: glUser.CreatedAt,
+					AvatarURL: glUser.AvatarURL,
+					WebURL:    glUser.WebURL,
+					Email:     glUser.Email,
+				}
+				// Upsert GitLab user
+				if err := c.db.Where(models.User{GitlabID: glUser.ID}).Assign(userData).FirstOrCreate(&user).Error; err != nil {
+					log.Printf("Failed to upsert GitLab user %s (ID: %d): %v", uname, glUser.ID, err)
+					c.sendReply(msg, fmt.Sprintf("Error processing user: %s. Please try again.", uname))
+					return // Abort on DB error during critical user upsert
+				}
+			} else { // Some other DB error
+				log.Printf("DB error looking up user %s: %v", uname, err)
+				c.sendReply(msg, fmt.Sprintf("Database error while looking up user: %s.", uname))
+				return // Abort on other DB errors
+			}
+		}
+		// Link as release manager for all repos
+		for _, rid := range repoIDs {
+			rm := models.ReleaseManager{RepositoryID: rid, UserID: user.ID}
+			if err := c.db.FirstOrCreate(&rm, models.ReleaseManager{RepositoryID: rid, UserID: user.ID}).Error; err != nil {
+				log.Printf("Failed to create release manager link for repo %d and user %d: %v", rid, user.ID, err)
+			}
+		}
+		added = append(added, user.Username)
+	}
+
+	replyText := fmt.Sprintf("Release managers for repositories %s updated: %s.", strings.Join(repoNames, ", "), strings.Join(added, ", "))
+	if len(notFoundUsers) > 0 {
+		replyText += fmt.Sprintf(" Users not found: %s.", strings.Join(notFoundUsers, ", "))
+	}
+	c.sendReply(msg, replyText)
+}
+
 // handleActionsCommand processes the /actions command to list MRs requiring action from a user.
 // Shows two sections: PENDING REVIEW (as reviewer) and PENDING FIXES (as author).
 func (c *VKCommandConsumer) handleActionsCommand(msg *botgolang.Message, from botgolang.Contact) {
@@ -442,8 +563,15 @@ func (c *VKCommandConsumer) handleActionsCommand(msg *botgolang.Message, from bo
 		return
 	}
 
+	// Fetch release manager MRs (if user is a release manager)
+	releaseMRs, err := utils.FindReleaseManagerActionMRs(c.db, user.ID)
+	if err != nil {
+		log.Printf("failed to fetch release manager MRs for user %s: %v", username, err)
+		// Continue without release MRs
+	}
+
 	// Build and send digest
-	text := utils.BuildUserActionsDigest(c.db, reviewMRs, fixesMRs, username)
+	text := utils.BuildUserActionsDigest(c.db, reviewMRs, fixesMRs, releaseMRs, username)
 	replyMsg := c.vkBot.NewTextMessage(fmt.Sprint(msg.Chat.ID), text)
 	if err := replyMsg.Send(); err != nil {
 		log.Printf("failed to send actions digest: %v", err)
@@ -1183,6 +1311,119 @@ func (c *VKCommandConsumer) handleAddBlockLabelCommand(msg *botgolang.Message, _
 	var reply string
 	if len(successRepos) > 0 {
 		reply = fmt.Sprintf("Block label '%s' added for: %s", labelName, strings.Join(successRepos, ", "))
+	}
+	if len(failedRepos) > 0 {
+		if reply != "" {
+			reply += "\n"
+		}
+		reply += fmt.Sprintf("Failed for: %s", strings.Join(failedRepos, ", "))
+	}
+	if reply == "" {
+		reply = "No repositories were updated."
+	}
+	c.sendReply(msg, reply)
+}
+
+// handleAddReleaseLabelCommand adds a release label that causes MRs to be completely ignored.
+// Format: /add_release_label <label_name> [#hexcolor]
+// Creates the label in GitLab if it doesn't exist, then saves as release label in DB.
+func (c *VKCommandConsumer) handleAddReleaseLabelCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	// Get subscribed repositories
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var subs []models.RepositorySubscription
+	c.db.Where("chat_id = ?", chat.ID).Preload("Repository").Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+
+	// Parse command arguments
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/add_release_label"))
+	if argStr == "" {
+		c.sendReply(msg, "Usage: /add_release_label <label_name> [#hexcolor]\nDefault color: #808080 (gray)")
+		return
+	}
+
+	parts := strings.Fields(argStr)
+	labelName := parts[0]
+	color := "#808080" // Default gray
+
+	// Check for optional hex color (last argument starting with #)
+	if len(parts) >= 2 {
+		lastPart := parts[len(parts)-1]
+		if strings.HasPrefix(lastPart, "#") && isValidHexColor(lastPart) {
+			color = lastPart
+			// If color is separate from label name, label is everything except the color
+			if len(parts) > 2 {
+				labelName = strings.Join(parts[:len(parts)-1], " ")
+			}
+		} else {
+			// No valid color, entire arg is the label name
+			labelName = argStr
+		}
+	}
+
+	var successRepos []string
+	var failedRepos []string
+
+	for _, sub := range subs {
+		repo := sub.Repository
+
+		// Try to get existing label from GitLab
+		labels, _, err := c.glClient.Labels.ListLabels(repo.GitlabID, &gitlab.ListLabelsOptions{
+			Search: gitlab.Ptr(labelName),
+		})
+
+		labelExists := false
+		if err == nil {
+			for _, l := range labels {
+				if l.Name == labelName {
+					labelExists = true
+					break
+				}
+			}
+		}
+
+		// Create label in GitLab if it doesn't exist
+		if !labelExists {
+			_, _, err := c.glClient.Labels.CreateLabel(repo.GitlabID, &gitlab.CreateLabelOptions{
+				Name:  gitlab.Ptr(labelName),
+				Color: gitlab.Ptr(color),
+			})
+			if err != nil {
+				log.Printf("failed to create label %s in repo %d: %v", labelName, repo.GitlabID, err)
+				failedRepos = append(failedRepos, repo.Name)
+				continue
+			}
+		}
+
+		// Save release label in database
+		releaseLabel := models.ReleaseLabel{
+			RepositoryID: repo.ID,
+			LabelName:    labelName,
+		}
+		if err := c.db.FirstOrCreate(&releaseLabel, models.ReleaseLabel{
+			RepositoryID: repo.ID,
+			LabelName:    labelName,
+		}).Error; err != nil {
+			log.Printf("failed to save release label %s for repo %d: %v", labelName, repo.ID, err)
+			failedRepos = append(failedRepos, repo.Name)
+			continue
+		}
+
+		successRepos = append(successRepos, repo.Name)
+	}
+
+	// Build response message
+	var reply string
+	if len(successRepos) > 0 {
+		reply = fmt.Sprintf("Release label '%s' added for: %s", labelName, strings.Join(successRepos, ", "))
 	}
 	if len(failedRepos) > 0 {
 		if reply != "" {

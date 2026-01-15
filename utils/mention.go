@@ -257,11 +257,12 @@ func formatSLAFromDigest(dmr *DigestMR) string {
 }
 
 // BuildUserActionsDigest builds a digest of actions required from a specific user.
-// Shows two sections:
+// Shows sections:
 // - PENDING REVIEW: MRs where user needs to review
 // - PENDING FIXES: MRs where user (as author) needs to address comments
-func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs []DigestMR, username string) string {
-	if len(reviewMRs) == 0 && len(fixesMRs) == 0 {
+// - READY FOR RELEASE: MRs where user is release manager and all reviewers approved (grouped by repo)
+func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs, releaseMRs []DigestMR, username string) string {
+	if len(reviewMRs) == 0 && len(fixesMRs) == 0 && len(releaseMRs) == 0 {
 		return fmt.Sprintf("No pending actions for %s.", username)
 	}
 
@@ -272,6 +273,10 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs []DigestMR, usernam
 		allUsers = append(allUsers, dmr.MR.Reviewers...)
 	}
 	for _, dmr := range fixesMRs {
+		allUsers = append(allUsers, dmr.MR.Author)
+		allUsers = append(allUsers, dmr.MR.Reviewers...)
+	}
+	for _, dmr := range releaseMRs {
 		allUsers = append(allUsers, dmr.MR.Author)
 		allUsers = append(allUsers, dmr.MR.Reviewers...)
 	}
@@ -304,5 +309,38 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs []DigestMR, usernam
 		}
 	}
 
+	// Section 3: Ready for Release (user is release manager, grouped by repo)
+	if len(releaseMRs) > 0 {
+		sb.WriteString("\nREADY FOR RELEASE:\n")
+		// Group by repository
+		repoMRs := make(map[string][]DigestMR)
+		for _, dmr := range releaseMRs {
+			repoName := dmr.MR.Repository.Name
+			repoMRs[repoName] = append(repoMRs[repoName], dmr)
+		}
+		// Sort repo names for consistent output
+		var repoNames []string
+		for name := range repoMRs {
+			repoNames = append(repoNames, name)
+		}
+		sort.Strings(repoNames)
+		for _, repoName := range repoNames {
+			sb.WriteString(fmt.Sprintf("\n%s:\n", repoName))
+			for _, dmr := range repoMRs[repoName] {
+				writeReleaseEntry(&sb, &dmr, mentionMap)
+			}
+		}
+	}
+
 	return sb.String()
+}
+
+// writeReleaseEntry writes a single release MR entry (simplified format).
+func writeReleaseEntry(sb *strings.Builder, dmr *DigestMR, mentionMap map[uint]string) {
+	mr := &dmr.MR
+	authorMention := mentionMap[mr.Author.ID]
+
+	sb.WriteString(fmt.Sprintf("- %s\n", SanitizeTitle(mr.Title)))
+	sb.WriteString(fmt.Sprintf("  %s\n", mr.WebURL))
+	sb.WriteString(fmt.Sprintf("  by @[%s]\n", authorMention))
 }

@@ -240,6 +240,36 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 	}
 }
 
+// checkAndRecordFullyApproved checks if an MR became fully approved and records the action.
+func checkAndRecordFullyApproved(db *gorm.DB, mrID uint, reviewers []models.User, approvers []models.User) {
+	if len(reviewers) == 0 {
+		return
+	}
+
+	// Check if all reviewers are approvers
+	approverIDs := make(map[uint]bool)
+	for _, a := range approvers {
+		approverIDs[a.ID] = true
+	}
+	for _, r := range reviewers {
+		if !approverIDs[r.ID] {
+			return // Not fully approved yet
+		}
+	}
+
+	// MR is fully approved - check if we already recorded this
+	var existingAction models.MRAction
+	err := db.Where("merge_request_id = ? AND action_type = ?", mrID, models.ActionFullyApproved).First(&existingAction).Error
+	if err == nil {
+		// Already recorded
+		return
+	}
+
+	// Record the fully approved action
+	recordMRAction(db, mrID, models.ActionFullyApproved, nil, nil, nil, time.Now(), "")
+	log.Printf("MR %d is now fully approved", mrID)
+}
+
 // syncMRApprovals syncs approvals and records approval actions.
 func syncMRApprovals(db *gorm.DB, client *gitlab.Client, projectID int, mrIID int, localMRID uint) []models.User {
 	approvals, _, err := client.MergeRequests.GetMergeRequestApprovals(projectID, mrIID)
@@ -536,6 +566,9 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 				return 0, fmt.Errorf("replacing approvers for MR GitlabID %d: %w", mrModel.GitlabID, err)
 			}
 		}
+
+		// Check if MR is now fully approved (all reviewers have approved)
+		checkAndRecordFullyApproved(db, mrModel.ID, reviewersToAssociate, approverUsers)
 
 		// Sync discussions/comments
 		syncMRDiscussions(db, client, gitlabProjectID, mr.IID, mrModel.ID)

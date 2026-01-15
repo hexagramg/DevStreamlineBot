@@ -87,13 +87,20 @@ func (c *PersonalDigestConsumer) processPreference(pref models.DailyDigestPrefer
 		return
 	}
 
+	// Fetch release manager MRs (if user is a release manager)
+	releaseMRs, err := utils.FindReleaseManagerActionMRs(c.db, gitlabUser.ID)
+	if err != nil {
+		log.Printf("failed to fetch release manager MRs for user %s: %v", gitlabUser.Username, err)
+		// Continue without release MRs
+	}
+
 	// Check if today is a holiday in all repos with pending actions
 	if c.isHolidayForAllRepos(reviewMRs, fixesMRs, userTime) {
 		return
 	}
 
 	// Build and send digest
-	text := utils.BuildUserActionsDigest(c.db, reviewMRs, fixesMRs, gitlabUser.Username)
+	text := utils.BuildUserActionsDigest(c.db, reviewMRs, fixesMRs, releaseMRs, gitlabUser.Username)
 	msg := c.vkBot.NewTextMessage(pref.DMChatID, text)
 	if err := msg.Send(); err != nil {
 		log.Printf("failed to send personal digest to %s: %v", pref.VKUser.UserID, err)

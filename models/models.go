@@ -249,6 +249,16 @@ type PossibleReviewer struct {
 	User         User       `gorm:"constraint:OnDelete:CASCADE;"`
 }
 
+// ReleaseManager links a GitLab repository with a user who manages releases.
+// Release managers are notified when MRs are fully approved and ready for release.
+type ReleaseManager struct {
+	gorm.Model
+	RepositoryID uint       `gorm:"not null;uniqueIndex:idx_release_manager_unique,priority:1"`
+	Repository   Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	UserID       uint       `gorm:"not null;uniqueIndex:idx_release_manager_unique,priority:2"`
+	User         User       `gorm:"constraint:OnDelete:CASCADE;"`
+}
+
 // VKMessage represents a message received by the bot.
 type VKMessage struct {
 	gorm.Model
@@ -307,6 +317,15 @@ type BlockLabel struct {
 	LabelName    string     `gorm:"not null;uniqueIndex:idx_block_label_unique,priority:2"`
 }
 
+// ReleaseLabel stores labels that mark MRs to be completely ignored.
+// MRs with release labels are excluded from reviewer assignment and digests.
+type ReleaseLabel struct {
+	gorm.Model
+	RepositoryID uint       `gorm:"not null;uniqueIndex:idx_release_label_unique,priority:1"`
+	Repository   Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	LabelName    string     `gorm:"not null;uniqueIndex:idx_release_label_unique,priority:2"`
+}
+
 // MRActionType defines the type of action recorded for an MR.
 type MRActionType string
 
@@ -322,6 +341,7 @@ const (
 	ActionClosed            MRActionType = "closed"
 	ActionBlockLabelAdded   MRActionType = "block_label_added"
 	ActionBlockLabelRemoved MRActionType = "block_label_removed"
+	ActionFullyApproved     MRActionType = "fully_approved" // All reviewers have approved
 )
 
 // MRAction records timestamped actions for MR timeline tracking.
