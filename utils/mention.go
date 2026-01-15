@@ -115,8 +115,9 @@ func BuildReviewDigest(db *gorm.DB, mrs []models.MergeRequest) string {
 			reviewerMention = mentionMap[mr.Reviewers[0].ID]
 		}
 		sanitizedTitle := SanitizeTitle(mr.Title)
+		repoName := mr.Repository.Name
 		sb.WriteString(
-			fmt.Sprintf("\n- %s\n  %s\n  author: @[%s] reviewer: @[%s]\n\n", sanitizedTitle, mr.WebURL, authorMention, reviewerMention),
+			fmt.Sprintf("\n- [%s] %s\n  %s\n  author: @[%s] reviewer: @[%s]\n\n", repoName, sanitizedTitle, mr.WebURL, authorMention, reviewerMention),
 		)
 	}
 	return sb.String()
@@ -203,7 +204,8 @@ func writeDigestEntry(sb *strings.Builder, dmr *DigestMR, mentionMap map[uint]st
 		stateIndicator = " [DRAFT]"
 	}
 
-	sb.WriteString(fmt.Sprintf("- %s%s\n", sanitizedTitle, stateIndicator))
+	repoName := mr.Repository.Name
+	sb.WriteString(fmt.Sprintf("- [%s] %s%s\n", repoName, sanitizedTitle, stateIndicator))
 	sb.WriteString(fmt.Sprintf("  %s\n", mr.WebURL))
 	sb.WriteString(fmt.Sprintf("  by @[%s] → %s\n", authorMention, reviewerStr))
 	sb.WriteString(fmt.Sprintf("  ⏱ %s | SLA: %s\n\n", timeStr, slaStatus))
@@ -227,8 +229,8 @@ func formatSLAFromDigest(dmr *DigestMR) string {
 	return result
 }
 
-func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs, releaseMRs []DigestMR, username string) string {
-	if len(reviewMRs) == 0 && len(fixesMRs) == 0 && len(releaseMRs) == 0 {
+func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs, authorOnReviewMRs, releaseMRs []DigestMR, username string) string {
+	if len(reviewMRs) == 0 && len(fixesMRs) == 0 && len(authorOnReviewMRs) == 0 && len(releaseMRs) == 0 {
 		return fmt.Sprintf("No pending actions for %s.", username)
 	}
 
@@ -238,6 +240,10 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs, releaseMRs []Diges
 		allUsers = append(allUsers, dmr.MR.Reviewers...)
 	}
 	for _, dmr := range fixesMRs {
+		allUsers = append(allUsers, dmr.MR.Author)
+		allUsers = append(allUsers, dmr.MR.Reviewers...)
+	}
+	for _, dmr := range authorOnReviewMRs {
 		allUsers = append(allUsers, dmr.MR.Author)
 		allUsers = append(allUsers, dmr.MR.Reviewers...)
 	}
@@ -253,6 +259,9 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs, releaseMRs []Diges
 	sort.Slice(fixesMRs, func(i, j int) bool {
 		return fixesMRs[i].SLAPercentage > fixesMRs[j].SLAPercentage
 	})
+	sort.Slice(authorOnReviewMRs, func(i, j int) bool {
+		return authorOnReviewMRs[i].SLAPercentage > authorOnReviewMRs[j].SLAPercentage
+	})
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("ACTIONS FOR %s:\n", username))
@@ -267,6 +276,13 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs, releaseMRs []Diges
 	if len(fixesMRs) > 0 {
 		sb.WriteString("\nPENDING FIXES:\n")
 		for _, dmr := range fixesMRs {
+			writeDigestEntry(&sb, &dmr, mentionMap)
+		}
+	}
+
+	if len(authorOnReviewMRs) > 0 {
+		sb.WriteString("\nMY MRS IN REVIEW:\n")
+		for _, dmr := range authorOnReviewMRs {
 			writeDigestEntry(&sb, &dmr, mentionMap)
 		}
 	}

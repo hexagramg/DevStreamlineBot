@@ -496,7 +496,7 @@ func (c *VKCommandConsumer) handleActionsCommand(msg *botgolang.Message, from bo
 		return
 	}
 
-	reviewMRs, fixesMRs, err := utils.FindUserActionMRs(c.db, user.ID)
+	reviewMRs, fixesMRs, authorOnReviewMRs, err := utils.FindUserActionMRs(c.db, user.ID)
 	if err != nil {
 		log.Printf("failed to fetch actions for user %s: %v", username, err)
 		c.sendReply(msg, "Failed to fetch actions. Please try again later.")
@@ -508,7 +508,7 @@ func (c *VKCommandConsumer) handleActionsCommand(msg *botgolang.Message, from bo
 		log.Printf("failed to fetch release manager MRs for user %s: %v", username, err)
 	}
 
-	text := utils.BuildUserActionsDigest(c.db, reviewMRs, fixesMRs, releaseMRs, username)
+	text := utils.BuildUserActionsDigest(c.db, reviewMRs, fixesMRs, authorOnReviewMRs, releaseMRs, username)
 	replyMsg := c.vkBot.NewTextMessage(fmt.Sprint(msg.Chat.ID), text)
 	if err := replyMsg.Send(); err != nil {
 		log.Printf("failed to send actions digest: %v", err)

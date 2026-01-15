@@ -68,7 +68,7 @@ func (c *PersonalDigestConsumer) processPreference(pref models.DailyDigestPrefer
 		return
 	}
 
-	reviewMRs, fixesMRs, err := utils.FindUserActionMRs(c.db, gitlabUser.ID)
+	reviewMRs, fixesMRs, authorOnReviewMRs, err := utils.FindUserActionMRs(c.db, gitlabUser.ID)
 	if err != nil {
 		log.Printf("failed to fetch actions for user %s: %v", gitlabUser.Username, err)
 		return
@@ -79,11 +79,11 @@ func (c *PersonalDigestConsumer) processPreference(pref models.DailyDigestPrefer
 		log.Printf("failed to fetch release manager MRs for user %s: %v", gitlabUser.Username, err)
 	}
 
-	if c.isHolidayForAllRepos(reviewMRs, fixesMRs, userTime) {
+	if c.isHolidayForAllRepos(reviewMRs, fixesMRs, authorOnReviewMRs, userTime) {
 		return
 	}
 
-	text := utils.BuildUserActionsDigest(c.db, reviewMRs, fixesMRs, releaseMRs, gitlabUser.Username)
+	text := utils.BuildUserActionsDigest(c.db, reviewMRs, fixesMRs, authorOnReviewMRs, releaseMRs, gitlabUser.Username)
 	msg := c.vkBot.NewTextMessage(pref.DMChatID, text)
 	if err := msg.Send(); err != nil {
 		log.Printf("failed to send personal digest to %s: %v", pref.VKUser.UserID, err)
@@ -97,12 +97,15 @@ func (c *PersonalDigestConsumer) processPreference(pref models.DailyDigestPrefer
 	}
 }
 
-func (c *PersonalDigestConsumer) isHolidayForAllRepos(reviewMRs, fixesMRs []utils.DigestMR, userTime time.Time) bool {
+func (c *PersonalDigestConsumer) isHolidayForAllRepos(reviewMRs, fixesMRs, authorOnReviewMRs []utils.DigestMR, userTime time.Time) bool {
 	repoIDs := make(map[uint]bool)
 	for _, dmr := range reviewMRs {
 		repoIDs[dmr.MR.RepositoryID] = true
 	}
 	for _, dmr := range fixesMRs {
+		repoIDs[dmr.MR.RepositoryID] = true
+	}
+	for _, dmr := range authorOnReviewMRs {
 		repoIDs[dmr.MR.RepositoryID] = true
 	}
 

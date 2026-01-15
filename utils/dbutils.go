@@ -12,6 +12,7 @@ func FindDigestMergeRequests(db *gorm.DB, repoIDs []uint) ([]models.MergeRequest
 	err := db.
 		Preload("Author").
 		Preload("Reviewers").
+		Preload("Repository").
 		Where("merge_requests.state = ? AND merge_requests.merged_at IS NULL", "opened").
 		Where("EXISTS (SELECT 1 FROM merge_request_reviewers mrr WHERE mrr.merge_request_id = merge_requests.id)").
 		Where("NOT EXISTS (SELECT 1 FROM merge_request_approvers mra WHERE mra.merge_request_id = merge_requests.id)").
@@ -197,10 +198,11 @@ func hasReleaseLabelFromCache(labels []models.Label, releaseLabels map[string]st
 }
 
 // FindUserActionMRs returns MRs requiring action from a specific user.
-// Returns two slices:
+// Returns three slices:
 // - reviewMRs: MRs where user is reviewer and state is on_review
 // - fixesMRs: MRs where user is author and state is on_fixes or draft
-func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs []DigestMR, err error) {
+// - authorOnReviewMRs: MRs where user is author and state is on_review (waiting for reviewers)
+func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs []DigestMR, authorOnReviewMRs []DigestMR, err error) {
 	var reviewerMRs []models.MergeRequest
 	err = db.
 		Preload("Author").
@@ -212,7 +214,7 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		Where("NOT EXISTS (SELECT 1 FROM merge_request_approvers mra WHERE mra.merge_request_id = merge_requests.id AND mra.user_id = ?)", userID).
 		Find(&reviewerMRs).Error
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var authorMRs []models.MergeRequest
@@ -226,7 +228,7 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		Where("EXISTS (SELECT 1 FROM merge_request_reviewers mrr WHERE mrr.merge_request_id = merge_requests.id)").
 		Find(&authorMRs).Error
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	for _, mr := range reviewerMRs {
@@ -261,27 +263,39 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		}
 
 		stateInfo := GetStateInfo(db, &mr)
-		if stateInfo.State != StateOnFixes && stateInfo.State != StateDraft {
-			continue
-		}
-
 		blocked := IsMRBlocked(db, &mr)
 		sla, _ := GetRepositorySLA(db, mr.RepositoryID)
-		threshold := sla.FixesDuration.ToDuration()
-		exceeded, percentage := CheckSLAStatus(stateInfo.WorkingTime, threshold)
 
-		fixesMRs = append(fixesMRs, DigestMR{
-			MR:            mr,
-			State:         stateInfo.State,
-			StateSince:    stateInfo.StateSince,
-			TimeInState:   stateInfo.WorkingTime,
-			SLAExceeded:   exceeded,
-			SLAPercentage: percentage,
-			Blocked:       blocked,
-		})
+		if stateInfo.State == StateOnFixes || stateInfo.State == StateDraft {
+			threshold := sla.FixesDuration.ToDuration()
+			exceeded, percentage := CheckSLAStatus(stateInfo.WorkingTime, threshold)
+
+			fixesMRs = append(fixesMRs, DigestMR{
+				MR:            mr,
+				State:         stateInfo.State,
+				StateSince:    stateInfo.StateSince,
+				TimeInState:   stateInfo.WorkingTime,
+				SLAExceeded:   exceeded,
+				SLAPercentage: percentage,
+				Blocked:       blocked,
+			})
+		} else if stateInfo.State == StateOnReview {
+			threshold := sla.ReviewDuration.ToDuration()
+			exceeded, percentage := CheckSLAStatus(stateInfo.WorkingTime, threshold)
+
+			authorOnReviewMRs = append(authorOnReviewMRs, DigestMR{
+				MR:            mr,
+				State:         stateInfo.State,
+				StateSince:    stateInfo.StateSince,
+				TimeInState:   stateInfo.WorkingTime,
+				SLAExceeded:   exceeded,
+				SLAPercentage: percentage,
+				Blocked:       blocked,
+			})
+		}
 	}
 
-	return reviewMRs, fixesMRs, nil
+	return reviewMRs, fixesMRs, authorOnReviewMRs, nil
 }
 
 // FindReleaseManagerActionMRs returns MRs that are fully approved and ready for release
