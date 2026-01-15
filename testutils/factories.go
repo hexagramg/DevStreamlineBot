@@ -53,7 +53,6 @@ type UserFactory struct {
 	counter int
 }
 
-// NewUserFactory creates a new UserFactory.
 func NewUserFactory(db *gorm.DB) *UserFactory {
 	return &UserFactory{db: db}
 }
@@ -61,27 +60,22 @@ func NewUserFactory(db *gorm.DB) *UserFactory {
 // UserOption is a functional option for creating users.
 type UserOption func(*models.User)
 
-// WithOnVacation sets the user as on vacation.
 func WithOnVacation() UserOption {
 	return func(u *models.User) { u.OnVacation = true }
 }
 
-// WithUsername sets a specific username.
 func WithUsername(username string) UserOption {
 	return func(u *models.User) { u.Username = username }
 }
 
-// WithEmail sets a specific email.
 func WithEmail(email string) UserOption {
 	return func(u *models.User) { u.Email = email }
 }
 
-// WithGitlabID sets a specific GitLab ID.
 func WithGitlabID(id int) UserOption {
 	return func(u *models.User) { u.GitlabID = id }
 }
 
-// Create creates a new user with the given options.
 func (f *UserFactory) Create(opts ...UserOption) models.User {
 	f.counter++
 	user := models.User{
@@ -105,7 +99,6 @@ type RepositoryFactory struct {
 	counter int
 }
 
-// NewRepositoryFactory creates a new RepositoryFactory.
 func NewRepositoryFactory(db *gorm.DB) *RepositoryFactory {
 	return &RepositoryFactory{db: db}
 }
@@ -113,17 +106,14 @@ func NewRepositoryFactory(db *gorm.DB) *RepositoryFactory {
 // RepoOption is a functional option for creating repositories.
 type RepoOption func(*models.Repository)
 
-// WithRepoName sets a specific repository name.
 func WithRepoName(name string) RepoOption {
 	return func(r *models.Repository) { r.Name = name }
 }
 
-// WithRepoGitlabID sets a specific GitLab ID.
 func WithRepoGitlabID(id int) RepoOption {
 	return func(r *models.Repository) { r.GitlabID = id }
 }
 
-// Create creates a new repository with the given options.
 func (f *RepositoryFactory) Create(opts ...RepoOption) models.Repository {
 	f.counter++
 	repo := models.Repository{
@@ -145,7 +135,6 @@ type MergeRequestFactory struct {
 	counter int
 }
 
-// NewMergeRequestFactory creates a new MergeRequestFactory.
 func NewMergeRequestFactory(db *gorm.DB) *MergeRequestFactory {
 	return &MergeRequestFactory{db: db}
 }
@@ -153,22 +142,18 @@ func NewMergeRequestFactory(db *gorm.DB) *MergeRequestFactory {
 // MROption is a functional option for creating merge requests.
 type MROption func(*models.MergeRequest)
 
-// WithDraft sets the MR as draft.
 func WithDraft() MROption {
 	return func(mr *models.MergeRequest) { mr.Draft = true }
 }
 
-// WithMRState sets the MR state.
 func WithMRState(state string) MROption {
 	return func(mr *models.MergeRequest) { mr.State = state }
 }
 
-// WithTitle sets the MR title.
 func WithTitle(title string) MROption {
 	return func(mr *models.MergeRequest) { mr.Title = title }
 }
 
-// WithLabels adds labels to the MR.
 func WithLabels(db *gorm.DB, labelNames ...string) MROption {
 	return func(mr *models.MergeRequest) {
 		var labels []models.Label
@@ -181,17 +166,14 @@ func WithLabels(db *gorm.DB, labelNames ...string) MROption {
 	}
 }
 
-// WithMRGitlabID sets a specific GitLab ID.
 func WithMRGitlabID(id int) MROption {
 	return func(mr *models.MergeRequest) { mr.GitlabID = id }
 }
 
-// WithCreatedAt sets the GitlabCreatedAt timestamp.
 func WithCreatedAt(t time.Time) MROption {
 	return func(mr *models.MergeRequest) { mr.GitlabCreatedAt = &t }
 }
 
-// Create creates a new merge request with the given options.
 func (f *MergeRequestFactory) Create(repo models.Repository, author models.User, opts ...MROption) models.MergeRequest {
 	f.counter++
 	now := time.Now()
@@ -222,12 +204,10 @@ type ChatFactory struct {
 	counter int
 }
 
-// NewChatFactory creates a new ChatFactory.
 func NewChatFactory(db *gorm.DB) *ChatFactory {
 	return &ChatFactory{db: db}
 }
 
-// Create creates a new chat.
 func (f *ChatFactory) Create() models.Chat {
 	f.counter++
 	chat := models.Chat{
@@ -245,12 +225,10 @@ type VKUserFactory struct {
 	counter int
 }
 
-// NewVKUserFactory creates a new VKUserFactory.
 func NewVKUserFactory(db *gorm.DB) *VKUserFactory {
 	return &VKUserFactory{db: db}
 }
 
-// Create creates a new VK user.
 func (f *VKUserFactory) Create() models.VKUser {
 	f.counter++
 	vkUser := models.VKUser{
@@ -262,7 +240,6 @@ func (f *VKUserFactory) Create() models.VKUser {
 	return vkUser
 }
 
-// CreateLabelReviewer creates a label reviewer association.
 func CreateLabelReviewer(db *gorm.DB, repo models.Repository, labelName string, user models.User) models.LabelReviewer {
 	lr := models.LabelReviewer{
 		RepositoryID: repo.ID,
@@ -273,7 +250,6 @@ func CreateLabelReviewer(db *gorm.DB, repo models.Repository, labelName string, 
 	return lr
 }
 
-// CreatePossibleReviewer creates a default reviewer association.
 func CreatePossibleReviewer(db *gorm.DB, repo models.Repository, user models.User) models.PossibleReviewer {
 	pr := models.PossibleReviewer{
 		RepositoryID: repo.ID,
@@ -283,7 +259,6 @@ func CreatePossibleReviewer(db *gorm.DB, repo models.Repository, user models.Use
 	return pr
 }
 
-// CreateRepositorySLA creates SLA settings for a repository.
 func CreateRepositorySLA(db *gorm.DB, repo models.Repository, assignCount int) models.RepositorySLA {
 	sla := models.RepositorySLA{
 		RepositoryID:   repo.ID,
@@ -295,7 +270,6 @@ func CreateRepositorySLA(db *gorm.DB, repo models.Repository, assignCount int) m
 	return sla
 }
 
-// CreateSubscription creates a repository subscription for a chat.
 func CreateSubscription(db *gorm.DB, repo models.Repository, chat models.Chat, vkUser models.VKUser) models.RepositorySubscription {
 	sub := models.RepositorySubscription{
 		RepositoryID: repo.ID,
@@ -310,32 +284,26 @@ func CreateSubscription(db *gorm.DB, repo models.Repository, chat models.Chat, v
 // ActionOption is a functional option for creating MR actions.
 type ActionOption func(*models.MRAction)
 
-// WithActor sets the actor for the action.
 func WithActor(user models.User) ActionOption {
 	return func(a *models.MRAction) { a.ActorID = &user.ID }
 }
 
-// WithTargetUser sets the target user for the action.
 func WithTargetUser(user models.User) ActionOption {
 	return func(a *models.MRAction) { a.TargetUserID = &user.ID }
 }
 
-// WithTimestamp sets the timestamp for the action.
 func WithTimestamp(t time.Time) ActionOption {
 	return func(a *models.MRAction) { a.Timestamp = t }
 }
 
-// WithMetadata sets metadata for the action.
 func WithMetadata(metadata string) ActionOption {
 	return func(a *models.MRAction) { a.Metadata = metadata }
 }
 
-// WithCommentID sets the comment ID for the action.
 func WithCommentID(commentID uint) ActionOption {
 	return func(a *models.MRAction) { a.CommentID = &commentID }
 }
 
-// CreateMRAction creates an MR action.
 func CreateMRAction(db *gorm.DB, mr models.MergeRequest, actionType models.MRActionType, opts ...ActionOption) models.MRAction {
 	action := models.MRAction{
 		MergeRequestID: mr.ID,
@@ -352,12 +320,10 @@ func CreateMRAction(db *gorm.DB, mr models.MergeRequest, actionType models.MRAct
 // CommentOption is a functional option for creating MR comments.
 type CommentOption func(*models.MRComment)
 
-// WithResolvable sets the comment as resolvable.
 func WithResolvable() CommentOption {
 	return func(c *models.MRComment) { c.Resolvable = true }
 }
 
-// WithResolved sets the comment as resolved.
 func WithResolved(resolvedBy *models.User) CommentOption {
 	return func(c *models.MRComment) {
 		c.Resolved = true
@@ -369,7 +335,6 @@ func WithResolved(resolvedBy *models.User) CommentOption {
 	}
 }
 
-// CreateMRComment creates an MR comment.
 func CreateMRComment(db *gorm.DB, mr models.MergeRequest, author models.User, noteID int, opts ...CommentOption) models.MRComment {
 	comment := models.MRComment{
 		MergeRequestID:  mr.ID,
@@ -388,12 +353,10 @@ func CreateMRComment(db *gorm.DB, mr models.MergeRequest, author models.User, no
 	return comment
 }
 
-// AssignReviewers assigns reviewers to an MR.
 func AssignReviewers(db *gorm.DB, mr *models.MergeRequest, reviewers ...models.User) {
 	db.Model(mr).Association("Reviewers").Append(reviewers)
 }
 
-// CreateHoliday creates a holiday for a repository.
 func CreateHoliday(db *gorm.DB, repo models.Repository, date time.Time) models.Holiday {
 	holiday := models.Holiday{
 		RepositoryID: repo.ID,
@@ -403,7 +366,6 @@ func CreateHoliday(db *gorm.DB, repo models.Repository, date time.Time) models.H
 	return holiday
 }
 
-// CreateBlockLabel creates a block label for a repository.
 func CreateBlockLabel(db *gorm.DB, repo models.Repository, labelName string) models.BlockLabel {
 	bl := models.BlockLabel{
 		RepositoryID: repo.ID,
@@ -413,7 +375,6 @@ func CreateBlockLabel(db *gorm.DB, repo models.Repository, labelName string) mod
 	return bl
 }
 
-// CreateBlockLabelAction creates a block label added or removed action for testing.
 func CreateBlockLabelAction(db *gorm.DB, mr models.MergeRequest, actionType models.MRActionType, label string, timestamp time.Time) models.MRAction {
 	action := models.MRAction{
 		MergeRequestID: mr.ID,
@@ -425,7 +386,6 @@ func CreateBlockLabelAction(db *gorm.DB, mr models.MergeRequest, actionType mode
 	return action
 }
 
-// CreateReleaseLabel creates a release label for a repository.
 func CreateReleaseLabel(db *gorm.DB, repo models.Repository, labelName string) models.ReleaseLabel {
 	rl := models.ReleaseLabel{
 		RepositoryID: repo.ID,
@@ -435,7 +395,6 @@ func CreateReleaseLabel(db *gorm.DB, repo models.Repository, labelName string) m
 	return rl
 }
 
-// CreateReleaseManager creates a release manager assignment for a repository.
 func CreateReleaseManager(db *gorm.DB, repo models.Repository, user models.User) models.ReleaseManager {
 	rm := models.ReleaseManager{
 		RepositoryID: repo.ID,
@@ -445,7 +404,6 @@ func CreateReleaseManager(db *gorm.DB, repo models.Repository, user models.User)
 	return rm
 }
 
-// AssignApprovers assigns approvers to an MR.
 func AssignApprovers(db *gorm.DB, mr *models.MergeRequest, approvers ...models.User) {
 	db.Model(mr).Association("Approvers").Append(approvers)
 }

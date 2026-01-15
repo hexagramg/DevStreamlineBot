@@ -7,7 +7,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// FindDigestMergeRequests returns open MRs with reviewers but no approvers for the given repositories.
 func FindDigestMergeRequests(db *gorm.DB, repoIDs []uint) ([]models.MergeRequest, error) {
 	var mrs []models.MergeRequest
 	err := db.
@@ -32,7 +31,6 @@ type DigestMR struct {
 	Blocked       bool // Whether MR currently has a block label
 }
 
-// IsMRFullyApproved returns true if all assigned reviewers have approved the MR.
 func IsMRFullyApproved(mr *models.MergeRequest) bool {
 	if len(mr.Reviewers) == 0 {
 		return false
@@ -49,7 +47,6 @@ func IsMRFullyApproved(mr *models.MergeRequest) bool {
 	return true
 }
 
-// IsMRBlocked checks if an MR has any block labels configured for its repository.
 func IsMRBlocked(db *gorm.DB, mr *models.MergeRequest) bool {
 	if len(mr.Labels) == 0 {
 		return false
@@ -68,8 +65,6 @@ func IsMRBlocked(db *gorm.DB, mr *models.MergeRequest) bool {
 	return count > 0
 }
 
-// HasReleaseLabel checks if an MR has any release labels configured for its repository.
-// MRs with release labels should be completely ignored (no reviewer assignment, not in digests).
 func HasReleaseLabel(db *gorm.DB, mr *models.MergeRequest) bool {
 	if len(mr.Labels) == 0 {
 		return false
@@ -88,11 +83,6 @@ func HasReleaseLabel(db *gorm.DB, mr *models.MergeRequest) bool {
 	return count > 0
 }
 
-// FindDigestMergeRequestsWithState returns open MRs with state information for enhanced digest.
-// Includes MRs that are:
-// - On review (has reviewers, no unresolved comments, not draft)
-// - On fixes (has unresolved comments)
-// - Draft (marked as draft/WIP)
 func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, error) {
 	var mrs []models.MergeRequest
 	err := db.
@@ -112,7 +102,6 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 		return nil, nil
 	}
 
-	// Batch fetch SLAs for all unique repos
 	slaMap := make(map[uint]*models.RepositorySLA)
 	var slas []models.RepositorySLA
 	db.Where("repository_id IN ?", repoIDs).Find(&slas)
@@ -120,7 +109,6 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 		slaMap[slas[i].RepositoryID] = &slas[i]
 	}
 
-	// Batch fetch block labels for all repos
 	var blockLabels []models.BlockLabel
 	db.Where("repository_id IN ?", repoIDs).Find(&blockLabels)
 	blockLabelMap := make(map[uint]map[string]struct{})
@@ -131,7 +119,6 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 		blockLabelMap[bl.RepositoryID][bl.LabelName] = struct{}{}
 	}
 
-	// Batch fetch release labels for all repos
 	var releaseLabels []models.ReleaseLabel
 	db.Where("repository_id IN ?", repoIDs).Find(&releaseLabels)
 	releaseLabelMap := make(map[uint]map[string]struct{})
@@ -144,17 +131,14 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 
 	var digestMRs []DigestMR
 	for _, mr := range mrs {
-		// Skip MRs with release labels (completely ignored)
 		if hasReleaseLabelFromCache(mr.Labels, releaseLabelMap[mr.RepositoryID]) {
 			continue
 		}
 
 		stateInfo := GetStateInfo(db, &mr)
 
-		// Check if MR is blocked using pre-fetched block labels
 		blocked := isMRBlockedFromCache(mr.Labels, blockLabelMap[mr.RepositoryID])
 
-		// Get SLA from pre-fetched map, or use defaults
 		sla := slaMap[mr.RepositoryID]
 		if sla == nil {
 			sla = &models.RepositorySLA{
@@ -188,7 +172,6 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 	return digestMRs, nil
 }
 
-// isMRBlockedFromCache checks if MR has block labels using pre-fetched cache.
 func isMRBlockedFromCache(labels []models.Label, blockLabels map[string]struct{}) bool {
 	if len(labels) == 0 || len(blockLabels) == 0 {
 		return false
@@ -201,7 +184,6 @@ func isMRBlockedFromCache(labels []models.Label, blockLabels map[string]struct{}
 	return false
 }
 
-// hasReleaseLabelFromCache checks if MR has release labels using pre-fetched cache.
 func hasReleaseLabelFromCache(labels []models.Label, releaseLabels map[string]struct{}) bool {
 	if len(labels) == 0 || len(releaseLabels) == 0 {
 		return false
@@ -219,7 +201,6 @@ func hasReleaseLabelFromCache(labels []models.Label, releaseLabels map[string]st
 // - reviewMRs: MRs where user is reviewer and state is on_review
 // - fixesMRs: MRs where user is author and state is on_fixes or draft
 func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs []DigestMR, err error) {
-	// Find MRs where user is a reviewer (not yet approved)
 	var reviewerMRs []models.MergeRequest
 	err = db.
 		Preload("Author").
@@ -234,7 +215,6 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		return nil, nil, err
 	}
 
-	// Find MRs where user is author
 	var authorMRs []models.MergeRequest
 	err = db.
 		Preload("Author").
@@ -249,9 +229,7 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		return nil, nil, err
 	}
 
-	// Process reviewer MRs - only include those on_review state
 	for _, mr := range reviewerMRs {
-		// Skip MRs with release labels (completely ignored)
 		if HasReleaseLabel(db, &mr) {
 			continue
 		}
@@ -277,9 +255,7 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		})
 	}
 
-	// Process author MRs - only include those on_fixes or draft state
 	for _, mr := range authorMRs {
-		// Skip MRs with release labels (completely ignored)
 		if HasReleaseLabel(db, &mr) {
 			continue
 		}
@@ -311,7 +287,6 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 // FindReleaseManagerActionMRs returns MRs that are fully approved and ready for release
 // for repositories where the user is a release manager.
 func FindReleaseManagerActionMRs(db *gorm.DB, userID uint) ([]DigestMR, error) {
-	// Find repositories where user is a release manager
 	var releaseManagerLinks []models.ReleaseManager
 	if err := db.Where("user_id = ?", userID).Find(&releaseManagerLinks).Error; err != nil {
 		return nil, err
@@ -326,7 +301,6 @@ func FindReleaseManagerActionMRs(db *gorm.DB, userID uint) ([]DigestMR, error) {
 		repoIDs[i] = rm.RepositoryID
 	}
 
-	// Find open MRs with reviewers in those repos
 	var mrs []models.MergeRequest
 	err := db.
 		Preload("Author").
@@ -344,12 +318,10 @@ func FindReleaseManagerActionMRs(db *gorm.DB, userID uint) ([]DigestMR, error) {
 
 	var releaseMRs []DigestMR
 	for _, mr := range mrs {
-		// Skip MRs with release labels (completely ignored)
 		if HasReleaseLabel(db, &mr) {
 			continue
 		}
 
-		// Only include fully approved MRs
 		if !IsMRFullyApproved(&mr) {
 			continue
 		}

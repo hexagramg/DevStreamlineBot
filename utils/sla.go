@@ -10,8 +10,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// ParseDuration parses duration strings in format "1h", "2d", "1w".
-// Supports: h (hours), d (days), w (weeks).
 func ParseDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(strings.ToLower(s))
 	if len(s) < 2 {
@@ -37,8 +35,6 @@ func ParseDuration(s string) (time.Duration, error) {
 	}
 }
 
-// FormatDuration formats a duration into a human-readable string.
-// Examples: "2d 4h", "1w 2d", "3h".
 func FormatDuration(d time.Duration) string {
 	if d <= 0 {
 		return "0h"
@@ -66,7 +62,6 @@ func FormatDuration(d time.Duration) string {
 	return strings.Join(parts, " ")
 }
 
-// isWorkingDaySimple checks if a day is a working day using pre-fetched holiday set.
 func isWorkingDaySimple(weekday time.Weekday, dateKey string, holidaySet map[string]bool) bool {
 	if weekday == time.Saturday || weekday == time.Sunday {
 		return false
@@ -74,8 +69,6 @@ func isWorkingDaySimple(weekday time.Weekday, dateKey string, holidaySet map[str
 	return !holidaySet[dateKey]
 }
 
-// countWeekendsInRange counts weekend days (Sat+Sun) in the range [start, end).
-// Uses formula for full weeks plus iteration for remainder.
 func countWeekendsInRange(start, end time.Time) int {
 	if !start.Before(end) {
 		return 0
@@ -85,7 +78,6 @@ func countWeekendsInRange(start, end time.Time) int {
 	fullWeeks := totalDays / 7
 	count := fullWeeks * 2 // 2 weekend days per week
 
-	// Count remaining days
 	remaining := totalDays % 7
 	current := start.AddDate(0, 0, fullWeeks*7)
 	for i := 0; i < remaining; i++ {
@@ -97,19 +89,14 @@ func countWeekendsInRange(start, end time.Time) int {
 	return count
 }
 
-// CalculateWorkingTime calculates working time between start and end,
-// excluding weekends (Saturday, Sunday) and holidays stored in the database.
-// Optimized: O(holidays) instead of O(hours) by counting middle days in bulk.
 func CalculateWorkingTime(db *gorm.DB, repoID uint, start, end time.Time) time.Duration {
 	if end.Before(start) || end.Equal(start) {
 		return 0
 	}
 
-	// Normalize both times to UTC to avoid timezone mismatches
 	start = start.UTC()
 	end = end.UTC()
 
-	// Fetch holidays once
 	var holidays []models.Holiday
 	db.Where("repository_id = ?", repoID).Find(&holidays)
 	holidaySet := make(map[string]bool)
@@ -117,11 +104,9 @@ func CalculateWorkingTime(db *gorm.DB, repoID uint, start, end time.Time) time.D
 		holidaySet[h.Date.Format("2006-01-02")] = true
 	}
 
-	// Normalize to day boundaries (midnight UTC)
 	startDay := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, start.Location())
 	endDay := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, end.Location())
 
-	// Case 1: Same day
 	if startDay.Equal(endDay) {
 		if isWorkingDaySimple(start.Weekday(), startDay.Format("2006-01-02"), holidaySet) {
 			return end.Sub(start)
@@ -131,20 +116,17 @@ func CalculateWorkingTime(db *gorm.DB, repoID uint, start, end time.Time) time.D
 
 	var totalHours float64
 
-	// First day: start → midnight (partial)
 	if isWorkingDaySimple(start.Weekday(), startDay.Format("2006-01-02"), holidaySet) {
 		nextMidnight := startDay.AddDate(0, 0, 1)
 		totalHours += nextMidnight.Sub(start).Hours()
 	}
 
-	// Middle days: full 24h each (bulk calculation)
 	middleStart := startDay.AddDate(0, 0, 1)
 	middleEnd := endDay
 	if middleStart.Before(middleEnd) {
 		totalMiddleDays := int(middleEnd.Sub(middleStart).Hours() / 24)
 		weekendDays := countWeekendsInRange(middleStart, middleEnd)
 
-		// Count holidays that fall on weekdays in middle range
 		holidaysOnWeekdays := 0
 		for dateKey := range holidaySet {
 			date, err := time.ParseInLocation("2006-01-02", dateKey, start.Location())
@@ -164,7 +146,6 @@ func CalculateWorkingTime(db *gorm.DB, repoID uint, start, end time.Time) time.D
 		}
 	}
 
-	// Last day: midnight → end (partial)
 	if isWorkingDaySimple(end.Weekday(), endDay.Format("2006-01-02"), holidaySet) {
 		totalHours += end.Sub(endDay).Hours()
 	}
@@ -172,11 +153,8 @@ func CalculateWorkingTime(db *gorm.DB, repoID uint, start, end time.Time) time.D
 	return time.Duration(totalHours * float64(time.Hour))
 }
 
-// CheckSLAStatus checks if elapsed time exceeds the SLA threshold.
-// Returns whether SLA is exceeded and the percentage of threshold used.
 func CheckSLAStatus(elapsed, threshold time.Duration) (exceeded bool, percentage float64) {
 	if threshold <= 0 {
-		// No SLA configured
 		return false, 0
 	}
 
@@ -186,8 +164,6 @@ func CheckSLAStatus(elapsed, threshold time.Duration) (exceeded bool, percentage
 	return exceeded, percentage
 }
 
-// SLAStatusString returns a formatted string representing SLA status.
-// Examples: "50%", "100% ⚠️", "150% ❌"
 func SLAStatusString(elapsed, threshold time.Duration) string {
 	if threshold <= 0 {
 		return "N/A"
@@ -203,15 +179,12 @@ func SLAStatusString(elapsed, threshold time.Duration) string {
 	return fmt.Sprintf("%.0f%%", percentage)
 }
 
-// DefaultSLADuration is the default SLA duration (48 hours).
 const DefaultSLADuration = models.Duration(48 * time.Hour)
 
-// GetRepositorySLA retrieves or creates default SLA settings for a repository.
 func GetRepositorySLA(db *gorm.DB, repoID uint) (*models.RepositorySLA, error) {
 	var sla models.RepositorySLA
 	err := db.Where("repository_id = ?", repoID).First(&sla).Error
 	if err == gorm.ErrRecordNotFound {
-		// Return default values (not persisted)
 		return &models.RepositorySLA{
 			RepositoryID:   repoID,
 			ReviewDuration: DefaultSLADuration,
@@ -225,8 +198,6 @@ func GetRepositorySLA(db *gorm.DB, repoID uint) (*models.RepositorySLA, error) {
 	return &sla, nil
 }
 
-// IsWorkingDay returns true if the given date is a working day
-// (not weekend, not holiday).
 func IsWorkingDay(db *gorm.DB, repoID uint, date time.Time) bool {
 	weekday := date.Weekday()
 	if weekday == time.Saturday || weekday == time.Sunday {

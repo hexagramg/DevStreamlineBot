@@ -8,7 +8,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// MRState represents the derived state of a merge request.
 type MRState string
 
 const (
@@ -22,7 +21,6 @@ const (
 // DeriveState determines the current state of a merge request based on DB data.
 // Priority order: merged > closed > draft > on_fixes > on_review
 func DeriveState(db *gorm.DB, mr *models.MergeRequest) MRState {
-	// Check terminal states first
 	if mr.State == "merged" {
 		return StateMerged
 	}
@@ -30,17 +28,14 @@ func DeriveState(db *gorm.DB, mr *models.MergeRequest) MRState {
 		return StateClosed
 	}
 
-	// Check if draft
 	if mr.Draft {
 		return StateDraft
 	}
 
-	// Check for unresolved resolvable comments
 	if HasUnresolvedComments(db, mr.ID) {
 		return StateOnFixes
 	}
 
-	// Default: on review (has reviewers or awaiting assignment)
 	return StateOnReview
 }
 
@@ -53,7 +48,6 @@ type StateInfo struct {
 	UnresolvedCount int64         // Number of unresolved resolvable comments
 }
 
-// GetStateInfo returns comprehensive state information for an MR.
 func GetStateInfo(db *gorm.DB, mr *models.MergeRequest) StateInfo {
 	state := DeriveState(db, mr)
 
@@ -61,18 +55,14 @@ func GetStateInfo(db *gorm.DB, mr *models.MergeRequest) StateInfo {
 		State: state,
 	}
 
-	// Get when MR entered current state
 	info.StateSince = GetStateTransitionTime(db, mr, state)
 
-	// Calculate time in state
 	if info.StateSince != nil {
 		now := time.Now()
 		info.TimeInState = now.Sub(*info.StateSince)
 
-		// Calculate working time (excludes weekends/holidays)
 		info.WorkingTime = CalculateWorkingTime(db, mr.RepositoryID, *info.StateSince, now)
 
-		// Subtract blocked time (uses same window as working time)
 		blockedTime := CalculateBlockedTime(db, mr.ID, mr.RepositoryID, *info.StateSince, now)
 		info.WorkingTime -= blockedTime
 		if info.WorkingTime < 0 {
@@ -80,7 +70,6 @@ func GetStateInfo(db *gorm.DB, mr *models.MergeRequest) StateInfo {
 		}
 	}
 
-	// Count unresolved comments
 	db.Model(&models.MRComment{}).
 		Where("merge_request_id = ? AND resolvable = ? AND resolved = ?", mr.ID, true, false).
 		Count(&info.UnresolvedCount)
@@ -102,12 +91,10 @@ func CalculateBlockedTime(db *gorm.DB, mrID uint, repoID uint, start, end time.T
 		return 0
 	}
 
-	// Track active block label count (handles multiple overlapping block labels)
 	activeCount := 0
 	var blockStart *time.Time
 	var totalBlocked time.Duration
 
-	// First, process actions before our window to establish initial state
 	for _, action := range actions {
 		if !action.Timestamp.Before(start) {
 			break
@@ -119,12 +106,10 @@ func CalculateBlockedTime(db *gorm.DB, mrID uint, repoID uint, start, end time.T
 		}
 	}
 
-	// If already blocked at window start
 	if activeCount > 0 {
 		blockStart = &start
 	}
 
-	// Process actions within our window
 	for _, action := range actions {
 		ts := action.Timestamp
 		if ts.Before(start) {
@@ -148,7 +133,6 @@ func CalculateBlockedTime(db *gorm.DB, mrID uint, repoID uint, start, end time.T
 		}
 	}
 
-	// If still blocked at window end
 	if activeCount > 0 && blockStart != nil {
 		totalBlocked += CalculateWorkingTime(db, repoID, *blockStart, end)
 	}
@@ -156,8 +140,6 @@ func CalculateBlockedTime(db *gorm.DB, mrID uint, repoID uint, start, end time.T
 	return totalBlocked
 }
 
-// GetStateTransitionTime returns when the MR entered its current state.
-// Uses MRAction records and MR timestamps to determine transition time.
 func GetStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, state MRState) *time.Time {
 	switch state {
 	case StateMerged:
@@ -167,7 +149,6 @@ func GetStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, state MRState)
 		return mr.ClosedAt
 
 	case StateDraft:
-		// Find the most recent draft toggle action where draft became true
 		var action models.MRAction
 		err := db.Where("merge_request_id = ? AND action_type = ?", mr.ID, models.ActionDraftToggled).
 			Order("timestamp DESC").
@@ -175,12 +156,9 @@ func GetStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, state MRState)
 		if err == nil && action.Metadata == `{"draft":true}` {
 			return &action.Timestamp
 		}
-		// Fallback to MR creation if it was created as draft
 		return mr.GitlabCreatedAt
 
 	case StateOnFixes:
-		// Find when the first unresolved comment was added
-		// This is when the MR transitioned to "on_fixes"
 		var firstUnresolvedComment models.MRComment
 		err := db.Where("merge_request_id = ? AND resolvable = ? AND resolved = ?", mr.ID, true, false).
 			Order("gitlab_created_at ASC").
@@ -191,15 +169,9 @@ func GetStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, state MRState)
 		return nil
 
 	case StateOnReview:
-		// Find the most recent event that put MR into review state:
-		// 1. Last comment resolved (if any were resolved)
-		// 2. Draft was unmarked
-		// 3. Reviewer was assigned
-		// 4. MR was created (if none of the above)
 
 		var candidates []time.Time
 
-		// Check last resolved comment
 		var lastResolved models.MRAction
 		err := db.Where("merge_request_id = ? AND action_type = ?", mr.ID, models.ActionCommentResolved).
 			Order("timestamp DESC").
@@ -208,7 +180,6 @@ func GetStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, state MRState)
 			candidates = append(candidates, lastResolved.Timestamp)
 		}
 
-		// Check draft unmarked
 		var draftToggle models.MRAction
 		err = db.Where("merge_request_id = ? AND action_type = ? AND metadata = ?",
 			mr.ID, models.ActionDraftToggled, `{"draft":false}`).
@@ -218,7 +189,6 @@ func GetStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, state MRState)
 			candidates = append(candidates, draftToggle.Timestamp)
 		}
 
-		// Check first reviewer assigned
 		var reviewerAssigned models.MRAction
 		err = db.Where("merge_request_id = ? AND action_type = ?", mr.ID, models.ActionReviewerAssigned).
 			Order("timestamp ASC").
@@ -227,7 +197,6 @@ func GetStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, state MRState)
 			candidates = append(candidates, reviewerAssigned.Timestamp)
 		}
 
-		// Find the most recent candidate
 		if len(candidates) > 0 {
 			latest := candidates[0]
 			for _, t := range candidates[1:] {
@@ -238,14 +207,12 @@ func GetStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, state MRState)
 			return &latest
 		}
 
-		// Fallback to MR creation
 		return mr.GitlabCreatedAt
 	}
 
 	return nil
 }
 
-// GetReviewerTimeline returns all actions related to a specific reviewer for an MR.
 func GetReviewerTimeline(db *gorm.DB, mrID uint, reviewerID uint) []models.MRAction {
 	var actions []models.MRAction
 
@@ -256,7 +223,6 @@ func GetReviewerTimeline(db *gorm.DB, mrID uint, reviewerID uint) []models.MRAct
 	return actions
 }
 
-// GetMRTimeline returns all actions for an MR in chronological order.
 func GetMRTimeline(db *gorm.DB, mrID uint) []models.MRAction {
 	var actions []models.MRAction
 
@@ -270,7 +236,6 @@ func GetMRTimeline(db *gorm.DB, mrID uint) []models.MRAction {
 	return actions
 }
 
-// HasUnresolvedComments returns true if the MR has any unresolved resolvable comments.
 func HasUnresolvedComments(db *gorm.DB, mrID uint) bool {
 	var count int64
 	db.Model(&models.MRComment{}).
@@ -279,7 +244,6 @@ func HasUnresolvedComments(db *gorm.DB, mrID uint) bool {
 	return count > 0
 }
 
-// GetUnresolvedComments returns all unresolved resolvable comments for an MR.
 func GetUnresolvedComments(db *gorm.DB, mrID uint) []models.MRComment {
 	var comments []models.MRComment
 

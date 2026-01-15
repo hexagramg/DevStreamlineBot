@@ -10,33 +10,27 @@ import (
 	"gorm.io/gorm"
 )
 
-// StartUserEmailPolling periodically finds DB users without email, fetches their email from GitLab, and updates the DB.
 func StartUserEmailPolling(db *gorm.DB, client *gitlab.Client, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	go func() {
 		defer ticker.Stop()
 
-		// Track the last API call time
-		lastAPICall := time.Now().Add(-10 * time.Second) // Initialize to allow immediate first call
+		lastAPICall := time.Now().Add(-10 * time.Second)
 
 		for range ticker.C {
-			// First process users with email_fetched = false
 			var users []models.User
 			if err := db.Where("email = '' AND email_fetched = false").Find(&users).Error; err != nil {
 				log.Printf("failed to query users without email: %v", err)
 				continue
 			}
 			for _, u := range users {
-				// Throttle API calls to 1 every 10 seconds
 				elapsed := time.Since(lastAPICall)
 				if elapsed < 10*time.Second {
-					// Wait for the remaining time to complete 10 seconds
 					waitTime := 10*time.Second - elapsed
 					time.Sleep(waitTime)
 				}
 
 				glUser, _, err := client.Users.GetUser(u.GitlabID, gitlab.GetUsersOptions{})
-				// Update last API call timestamp after each call
 				lastAPICall = time.Now()
 
 				if err != nil {
@@ -52,8 +46,6 @@ func StartUserEmailPolling(db *gorm.DB, client *gitlab.Client, interval time.Dur
 				}
 			}
 
-			// Now process users with email_fetched = true but still have empty emails
-			// Batch VKUser lookup
 			var mappings []struct {
 				UserID   uint
 				NewEmail string
@@ -66,14 +58,12 @@ func StartUserEmailPolling(db *gorm.DB, client *gitlab.Client, interval time.Dur
 				log.Printf("failed to batch join query VK users: %v", err)
 				continue
 			}
-			// Build map of userID to first matched newEmail
 			newMap := make(map[uint]string, len(mappings))
 			for _, m := range mappings {
 				if _, exists := newMap[m.UserID]; !exists {
 					newMap[m.UserID] = m.NewEmail
 				}
 			}
-			// Update users in batch (one update per user)
 			for userID, email := range newMap {
 				now := time.Now()
 				if err := db.Model(&models.User{}).Where("id = ?", userID).
@@ -84,8 +74,6 @@ func StartUserEmailPolling(db *gorm.DB, client *gitlab.Client, interval time.Dur
 				}
 			}
 
-			// Reset email_fetched flag for users that were updated more than a day ago,
-			// have no email, username doesn't contain '-', and email_fetched is true
 			oneDayAgo := time.Now().Add(-24 * time.Hour)
 			result := db.Model(&models.User{}).
 				Where("email = '' AND email_fetched = true AND username NOT LIKE '%--%' AND updated_at < ?", oneDayAgo).

@@ -15,7 +15,6 @@ import (
 // It checks if an identical action already exists within a short time window to avoid duplicates.
 // commentID links to MRComment for comment-related actions (ActionCommentAdded, ActionCommentResolved).
 func recordMRAction(db *gorm.DB, mrID uint, actionType models.MRActionType, actorID *uint, targetUserID *uint, commentID *uint, timestamp time.Time, metadata string) {
-	// Check for duplicate within 1 minute window
 	var existing models.MRAction
 	query := db.Where("merge_request_id = ? AND action_type = ? AND timestamp > ?",
 		mrID, actionType, timestamp.Add(-time.Minute))
@@ -39,7 +38,6 @@ func recordMRAction(db *gorm.DB, mrID uint, actionType models.MRActionType, acto
 	}
 
 	if err := query.First(&existing).Error; err == nil {
-		// Duplicate found, skip
 		return
 	}
 
@@ -58,10 +56,7 @@ func recordMRAction(db *gorm.DB, mrID uint, actionType models.MRActionType, acto
 	}
 }
 
-// detectBlockLabelChanges detects when block labels are added or removed from an MR.
-// Records ActionBlockLabelAdded/ActionBlockLabelRemoved actions for SLA tracking.
 func detectBlockLabelChanges(db *gorm.DB, mrID uint, repoID uint, oldLabels, newLabels []string) {
-	// Get block labels for this repo
 	var blockLabels []models.BlockLabel
 	db.Where("repository_id = ?", repoID).Find(&blockLabels)
 	if len(blockLabels) == 0 {
@@ -84,7 +79,6 @@ func detectBlockLabelChanges(db *gorm.DB, mrID uint, repoID uint, oldLabels, new
 
 	now := time.Now()
 
-	// Check for added block labels
 	for label := range newSet {
 		if blockLabelSet[label] && !oldSet[label] {
 			recordMRAction(db, mrID, models.ActionBlockLabelAdded, nil, nil, nil, now,
@@ -92,7 +86,6 @@ func detectBlockLabelChanges(db *gorm.DB, mrID uint, repoID uint, oldLabels, new
 		}
 	}
 
-	// Check for removed block labels
 	for label := range oldSet {
 		if blockLabelSet[label] && !newSet[label] {
 			recordMRAction(db, mrID, models.ActionBlockLabelRemoved, nil, nil, nil, now,
@@ -101,16 +94,13 @@ func detectBlockLabelChanges(db *gorm.DB, mrID uint, repoID uint, oldLabels, new
 	}
 }
 
-// detectAndRecordStateChanges compares old and new MR state and records relevant actions.
 func detectAndRecordStateChanges(db *gorm.DB, existingMR *models.MergeRequest, newMR *gitlab.BasicMergeRequest, localMRID uint) {
 	now := time.Now()
 
-	// Detect draft toggle
 	if existingMR != nil && existingMR.Draft != newMR.Draft {
 		recordMRAction(db, localMRID, models.ActionDraftToggled, nil, nil, nil, now, fmt.Sprintf(`{"draft":%t}`, newMR.Draft))
 	}
 
-	// Detect merge
 	if existingMR != nil && existingMR.State != "merged" && newMR.State == "merged" {
 		timestamp := now
 		if newMR.MergedAt != nil {
@@ -119,7 +109,6 @@ func detectAndRecordStateChanges(db *gorm.DB, existingMR *models.MergeRequest, n
 		recordMRAction(db, localMRID, models.ActionMerged, nil, nil, nil, timestamp, "")
 	}
 
-	// Detect close
 	if existingMR != nil && existingMR.State != "closed" && newMR.State == "closed" {
 		timestamp := now
 		if newMR.ClosedAt != nil {
@@ -129,7 +118,6 @@ func detectAndRecordStateChanges(db *gorm.DB, existingMR *models.MergeRequest, n
 	}
 }
 
-// syncMRDiscussions fetches and syncs GitLab discussions/comments for an MR.
 func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID int, localMRID uint) {
 	opts := &gitlab.ListMergeRequestDiscussionsOptions{
 		PerPage: 100,
@@ -145,12 +133,10 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 
 		for _, discussion := range discussions {
 			for _, note := range discussion.Notes {
-				// Skip system notes (e.g., "mentioned in commit", "changed the description")
 				if note.System {
 					continue
 				}
 
-				// Upsert the comment author
 				var author models.User
 				if note.Author.ID != 0 {
 					authorData := models.User{
@@ -167,11 +153,9 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 					}
 				}
 
-				// Check if comment already exists
 				var existingComment models.MRComment
 				err := db.Where("gitlab_note_id = ?", note.ID).First(&existingComment).Error
 
-				// Prepare resolved by user if applicable
 				var resolvedByID *uint
 				if note.ResolvedBy.ID != 0 {
 					var resolvedByUser models.User
@@ -206,26 +190,21 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 				}
 
 				if err == gorm.ErrRecordNotFound {
-					// New comment
 					if err := db.Create(&comment).Error; err != nil {
 						log.Printf("Error creating comment for MR %d, note %d: %v", localMRID, note.ID, err)
 						continue
 					}
-					// Record action for new comment with link to the comment
 					recordMRAction(db, localMRID, models.ActionCommentAdded, &author.ID, nil, &comment.ID, *note.CreatedAt, "")
 				} else if err == nil {
-					// Existing comment - check for resolved state change (only for resolvable notes)
 					wasResolved := existingComment.Resolved
 					isResolved := note.Resolved
 
-					// Update the comment
 					comment.ID = existingComment.ID
 					if err := db.Model(&existingComment).Updates(comment).Error; err != nil {
 						log.Printf("Error updating comment for MR %d, note %d: %v", localMRID, note.ID, err)
 						continue
 					}
 
-					// Record action if resolved state changed (only for resolvable notes)
 					if note.Resolvable && !wasResolved && isResolved && note.ResolvedAt != nil {
 						recordMRAction(db, localMRID, models.ActionCommentResolved, resolvedByID, &author.ID, &comment.ID, *note.ResolvedAt, "")
 					}
@@ -240,13 +219,11 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 	}
 }
 
-// checkAndRecordFullyApproved checks if an MR became fully approved and records the action.
 func checkAndRecordFullyApproved(db *gorm.DB, mrID uint, reviewers []models.User, approvers []models.User) {
 	if len(reviewers) == 0 {
 		return
 	}
 
-	// Check if all reviewers are approvers
 	approverIDs := make(map[uint]bool)
 	for _, a := range approvers {
 		approverIDs[a.ID] = true
@@ -257,20 +234,16 @@ func checkAndRecordFullyApproved(db *gorm.DB, mrID uint, reviewers []models.User
 		}
 	}
 
-	// MR is fully approved - check if we already recorded this
 	var existingAction models.MRAction
 	err := db.Where("merge_request_id = ? AND action_type = ?", mrID, models.ActionFullyApproved).First(&existingAction).Error
 	if err == nil {
-		// Already recorded
 		return
 	}
 
-	// Record the fully approved action
 	recordMRAction(db, mrID, models.ActionFullyApproved, nil, nil, nil, time.Now(), "")
 	log.Printf("MR %d is now fully approved", mrID)
 }
 
-// syncMRApprovals syncs approvals and records approval actions.
 func syncMRApprovals(db *gorm.DB, client *gitlab.Client, projectID int, mrIID int, localMRID uint) []models.User {
 	approvals, _, err := client.MergeRequests.GetMergeRequestApprovals(projectID, mrIID)
 	if err != nil {
@@ -282,7 +255,6 @@ func syncMRApprovals(db *gorm.DB, client *gitlab.Client, projectID int, mrIID in
 		return nil
 	}
 
-	// Get existing approvers from DB to detect new approvals
 	var existingApprovers []models.User
 	db.Model(&models.MergeRequest{Model: gorm.Model{ID: localMRID}}).Association("Approvers").Find(&existingApprovers)
 	existingApproverIDs := make(map[int]bool)
@@ -311,7 +283,6 @@ func syncMRApprovals(db *gorm.DB, client *gitlab.Client, projectID int, mrIID in
 		}
 		approverUsers = append(approverUsers, u)
 
-		// Record approval action if this is a new approver
 		if !existingApproverIDs[ap.User.ID] {
 			timestamp := time.Now()
 			// Note: GitLab API doesn't provide ApprovedAt in approvals.ApprovedBy
@@ -320,7 +291,6 @@ func syncMRApprovals(db *gorm.DB, client *gitlab.Client, projectID int, mrIID in
 		}
 	}
 
-	// Detect unapprovals (approvers that were removed)
 	for _, existing := range existingApprovers {
 		found := false
 		for _, ap := range approvals.ApprovedBy {
@@ -337,13 +307,8 @@ func syncMRApprovals(db *gorm.DB, client *gitlab.Client, projectID int, mrIID in
 	return approverUsers
 }
 
-// syncGitLabMRToDB processes a single merge request from GitLab and upserts it into the database.
-// It handles the MR itself, its author, assignee, labels, reviewers, and approvers.
-// Assumes models.User.CreatedAt is *time.Time
 func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeRequest, localRepositoryID uint, gitlabProjectID int) (uint, error) {
-	// Upsert author
 	var author models.User
-	// mr.Author is *gitlab.User which has CreatedAt *time.Time and Locked bool
 	authorData := models.User{
 		GitlabID:  mr.Author.ID,
 		Username:  mr.Author.Username,
@@ -359,17 +324,14 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		return 0, fmt.Errorf("upserting author GitlabID %d: %w", mr.Author.ID, err)
 	}
 
-	// Upsert assignee
 	var assignee models.User
 	var assigneeID uint
 	if mr.Assignee != nil {
-		// mr.Assignee is *gitlab.User
 		assigneeData := models.User{
 			GitlabID:  mr.Assignee.ID,
 			Username:  mr.Assignee.Username,
 			Name:      mr.Assignee.Name,
 			State:     mr.Assignee.State,
-			Locked:    mr.Assignee.Locked, // Assuming models.User.Locked is bool
 			CreatedAt: mr.Assignee.CreatedAt,
 			AvatarURL: mr.Assignee.AvatarURL,
 			WebURL:    mr.Assignee.WebURL,
@@ -381,7 +343,6 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		assigneeID = assignee.ID
 	}
 
-	// Build MR model
 	mrModel := models.MergeRequest{
 		GitlabID:                    mr.ID,
 		IID:                         mr.IID,
@@ -420,7 +381,6 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		UserNotesCount:              mr.UserNotesCount,
 	}
 
-	// Add References if available
 	if mr.References != nil {
 		mrModel.References = models.IssueReferences{
 			Short:    mr.References.Short,
@@ -429,7 +389,6 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		}
 	}
 
-	// Add TimeStats if available
 	if mr.TimeStats != nil {
 		mrModel.TimeStats = models.TimeStats{
 			HumanTimeEstimate:   mr.TimeStats.HumanTimeEstimate,
@@ -442,7 +401,6 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 	now := time.Now()
 	mrModel.LastUpdate = &now
 
-	// Upsert the merge request: update if exists, create if not
 	var existingMR models.MergeRequest
 	var isNewMR bool
 	err := db.Where(models.MergeRequest{GitlabID: mrModel.GitlabID}).First(&existingMR).Error
@@ -451,17 +409,14 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		return 0, fmt.Errorf("checking for existing merge request GitlabID %d: %w", mrModel.GitlabID, err)
 	}
 	if err == gorm.ErrRecordNotFound {
-		// Not found, create new
 		isNewMR = true
 		if err := db.Create(&mrModel).Error; err != nil {
 			log.Printf("Error creating merge request GitlabID %d: %v", mrModel.GitlabID, err)
 			return 0, fmt.Errorf("creating merge request GitlabID %d: %w", mrModel.GitlabID, err)
 		}
 	} else {
-		// Detect and record state changes before updating
 		detectAndRecordStateChanges(db, &existingMR, mr, existingMR.ID)
 
-		// Exists, update all fields
 		mrModel.ID = existingMR.ID // ensure correct primary key
 		if err := db.Model(&existingMR).Select("*").Updates(mrModel).Error; err != nil {
 			log.Printf("Error updating merge request GitlabID %d: %v", mrModel.GitlabID, err)
@@ -471,7 +426,6 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		mrModel.ID = existingMR.ID
 	}
 
-	// For tracking reviewer changes
 	var existingReviewerIDs map[int]bool
 	if !isNewMR {
 		var existingReviewers []models.User
@@ -482,7 +436,6 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		}
 	}
 
-	// Detect block label changes before syncing labels
 	if !isNewMR {
 		var existingLabels []models.Label
 		db.Model(&existingMR).Association("Labels").Find(&existingLabels)
@@ -493,7 +446,6 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		detectBlockLabelChanges(db, existingMR.ID, localRepositoryID, oldLabelNames, mr.Labels)
 	}
 
-	// Sync labels
 	var labelsToAssociate []models.Label
 	for _, name := range mr.Labels {
 		var lbl models.Label
@@ -509,7 +461,6 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		return 0, fmt.Errorf("replacing labels for MR GitlabID %d: %w", mrModel.GitlabID, err)
 	}
 
-	// Sync reviewers (mr.Reviewers are []*gitlab.BasicUser)
 	var reviewersToAssociate []models.User
 	for _, rv := range mr.Reviewers {
 		var u models.User
@@ -527,13 +478,11 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		}
 		reviewersToAssociate = append(reviewersToAssociate, u)
 
-		// Record ActionReviewerAssigned for new reviewers
 		if existingReviewerIDs != nil && !existingReviewerIDs[rv.ID] {
 			recordMRAction(db, mrModel.ID, models.ActionReviewerAssigned, nil, &u.ID, nil, now, "")
 		}
 	}
 
-	// Detect reviewer removals (reviewers that were removed from GitLab)
 	if !isNewMR {
 		var existingReviewers []models.User
 		db.Model(&existingMR).Association("Reviewers").Find(&existingReviewers)
@@ -556,9 +505,7 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		return 0, fmt.Errorf("replacing reviewers for MR GitlabID %d: %w", mrModel.GitlabID, err)
 	}
 
-	// Sync approvers and discussions for active MRs
 	if mr.State == "opened" || mr.State == "locked" {
-		// Sync approvals with action tracking
 		approverUsers := syncMRApprovals(db, client, gitlabProjectID, mr.IID, mrModel.ID)
 		if approverUsers != nil {
 			if err := db.Model(&mrModel).Association("Approvers").Replace(approverUsers); err != nil {
@@ -567,10 +514,8 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 			}
 		}
 
-		// Check if MR is now fully approved (all reviewers have approved)
 		checkAndRecordFullyApproved(db, mrModel.ID, reviewersToAssociate, approverUsers)
 
-		// Sync discussions/comments
 		syncMRDiscussions(db, client, gitlabProjectID, mr.IID, mrModel.ID)
 	} else {
 		// If MR is not 'opened' or 'locked' (e.g., 'merged', 'closed'), clear existing approvers in DB.
@@ -582,7 +527,6 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 	return mrModel.ID, nil
 }
 
-// PollMergeRequests repositoriy polling logic.
 func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
 	var repos []models.Repository
 	if err := db.Where("EXISTS (SELECT 1 FROM repository_subscriptions WHERE repository_subscriptions.repository_id = repositories.id)").
@@ -598,7 +542,6 @@ func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
 			ListOptions: gitlab.ListOptions{PerPage: 100, Page: 1},
 		}
 
-		// 1. Fetch all currently open MRs from GitLab with pagination
 		for {
 			mrsPage, resp, err := client.MergeRequests.ListProjectMergeRequests(repo.GitlabID, opts)
 			if err != nil {
@@ -606,7 +549,6 @@ func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
 				break // Break from pagination loop for this repo on error
 			}
 
-			// Add merge requests directly to our collection without fetching full details
 			allCurrentlyOpenGitlabMRs = append(allCurrentlyOpenGitlabMRs, mrsPage...)
 
 			if resp.NextPage == 0 {
@@ -616,10 +558,8 @@ func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
 		}
 		log.Printf("Fetched %d open merge requests from GitLab for repository %s", len(allCurrentlyOpenGitlabMRs), repo.Name)
 
-		// Track database IDs of processed MRs
 		processedMRIDs := make([]uint, 0, len(allCurrentlyOpenGitlabMRs))
 
-		// 2. Process/Upsert these fetched open MRs
 		for _, gitlabMR := range allCurrentlyOpenGitlabMRs {
 			mrID, err := syncGitLabMRToDB(db, client, gitlabMR, repo.ID, repo.GitlabID)
 			if err != nil {
@@ -633,7 +573,6 @@ func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
 		var dbOpenMRs []models.MergeRequest
 		query := db.Where("repository_id = ? AND state = ?", repo.ID, "opened")
 
-		// Exclude already processed MRs if we have any
 		if len(processedMRIDs) > 0 {
 			query = query.Where("id NOT IN ?", processedMRIDs)
 		}
@@ -644,7 +583,6 @@ func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
 		}
 
 		for _, dbMR := range dbOpenMRs {
-			// This MR is 'opened' in DB but not in GitLab's 'opened' list. Re-check its status.
 			log.Printf("Re-syncing potentially stale MR: RepoGitlabID %d, MR IID %d (DB ID %d, MR GitlabID %d)", repo.GitlabID, dbMR.IID, dbMR.ID, dbMR.GitlabID)
 			fullMRDetails, resp, err := client.MergeRequests.GetMergeRequest(repo.GitlabID, dbMR.IID, nil)
 			if err != nil {
@@ -660,7 +598,6 @@ func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
 				continue // Next stale MR
 			}
 
-			// Convert fullMRDetails to *gitlab.BasicMergeRequest
 			basicMR := &gitlab.BasicMergeRequest{
 				ID:                          fullMRDetails.ID,
 				IID:                         fullMRDetails.IID,
@@ -702,7 +639,6 @@ func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
 				UserNotesCount:              fullMRDetails.UserNotesCount,
 			}
 
-			// Fetched details, now sync them
 			_, err = syncGitLabMRToDB(db, client, basicMR, repo.ID, repo.GitlabID)
 			if err != nil {
 				log.Printf("Failed to re-sync stale MR (ProjectID: %d, MR IID: %d, MR ID: %d): %v", repo.GitlabID, fullMRDetails.IID, fullMRDetails.ID, err)

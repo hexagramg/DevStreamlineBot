@@ -12,12 +12,10 @@ import (
 // Implements database/sql Scanner and driver.Valuer interfaces for GORM compatibility.
 type Duration time.Duration
 
-// Value implements driver.Valuer interface for database storage.
 func (d Duration) Value() (driver.Value, error) {
 	return int64(d), nil
 }
 
-// Scan implements sql.Scanner interface for database retrieval.
 func (d *Duration) Scan(value interface{}) error {
 	if value == nil {
 		*d = 0
@@ -32,12 +30,10 @@ func (d *Duration) Scan(value interface{}) error {
 	return nil
 }
 
-// ToDuration converts Duration to standard time.Duration.
 func (d Duration) ToDuration() time.Duration {
 	return time.Duration(d)
 }
 
-// Repository represents a GitLab project tracked in the system.
 type Repository struct {
 	gorm.Model
 	GitlabID      int `gorm:"uniqueIndex;not null"`
@@ -48,7 +44,6 @@ type Repository struct {
 	Subscriptions []RepositorySubscription
 }
 
-// User represents a GitLab user stored in the database.
 type User struct {
 	gorm.Model
 
@@ -71,7 +66,6 @@ type User struct {
 	ReviewedMergeRequests []MergeRequest `gorm:"many2many:merge_request_reviewers"`
 }
 
-// Label represents a GitLab label.
 type Label struct {
 	gorm.Model
 	GitlabID               int    `json:"id"`
@@ -88,14 +82,12 @@ type Label struct {
 	MergeRequests          []MergeRequest `gorm:"many2many:merge_request_labels"`
 }
 
-// IssueReferences maps MR reference paths.
 type IssueReferences struct {
 	Short    string `json:"short"`
 	Relative string `json:"relative"`
 	Full     string `json:"full"`
 }
 
-// TimeStats holds MR time estimates and spent data.
 type TimeStats struct {
 	HumanTimeEstimate   string `json:"human_time_estimate"`
 	HumanTotalTimeSpent string `json:"human_total_time_spent"`
@@ -103,7 +95,6 @@ type TimeStats struct {
 	TotalTimeSpent      int    `json:"total_time_spent"`
 }
 
-// Milestone represents a GitLab milestone.
 type Milestone struct {
 	gorm.Model
 	GitlabID      int `json:"id" gorm:"not null;index"`
@@ -122,19 +113,15 @@ type Milestone struct {
 	MergeRequests []MergeRequest
 }
 
-// MergeRequest represents a GitLab merge request in our DB.
 type MergeRequest struct {
 	gorm.Model
 
-	// GitLab identifiers
 	GitlabID int `json:"id" gorm:"not null;uniqueIndex:idx_mr_gitlab_id"`       // global MR ID, should be unique
 	IID      int `json:"iid" gorm:"not null;uniqueIndex:idx_mr_repository_iid"` // project-scoped MR IID, unique within a repository
 
-	// Branch info
 	SourceBranch string
 	TargetBranch string
 
-	// Metadata
 	Title                    string
 	Description              string
 	State                    string
@@ -145,7 +132,6 @@ type MergeRequest struct {
 	ShouldRemoveSourceBranch bool
 	ForceRemoveSourceBranch  bool
 
-	// Additional GitLab fields
 	Imported                    bool
 	ImportedFrom                string
 	SourceProjectID             int
@@ -162,7 +148,6 @@ type MergeRequest struct {
 	HasConflicts                bool
 	BlockingDiscussionsResolved bool
 
-	// Timestamps from GitLab
 	GitlabCreatedAt *time.Time
 	GitlabUpdatedAt *time.Time
 	MergedAt        *time.Time
@@ -176,16 +161,13 @@ type MergeRequest struct {
 	// Last state for which DM notification was sent (for state change notifications)
 	LastNotifiedState string `gorm:"type:varchar(20)"`
 
-	// Nested data normalized
 	Labels     []Label         `gorm:"many2many:merge_request_labels"`
 	References IssueReferences `gorm:"embedded;embeddedPrefix:references_"`
 	TimeStats  TimeStats       `gorm:"embedded;embeddedPrefix:time_stats_"`
 
-	// Milestone relation
 	MilestoneID *uint
 	Milestone   *Milestone `gorm:"constraint:OnDelete:SET NULL;"`
 
-	// Associations
 	AuthorID    uint
 	Author      User
 	AssigneeID  uint
@@ -201,7 +183,6 @@ type MergeRequest struct {
 	Repository   Repository
 }
 
-// Chat represents a VK Teams chat.
 type Chat struct {
 	gorm.Model
 	ChatID         string `gorm:"uniqueIndex;not null"` // ID of the chat
@@ -218,7 +199,6 @@ type Chat struct {
 	InviteLink     string // invite link for chat
 }
 
-// VKUser represents a VK Teams user.
 type VKUser struct {
 	gorm.Model
 	UserID    string `gorm:"uniqueIndex;not null;index"` // unique user identifier (email)
@@ -240,7 +220,6 @@ type RepositorySubscription struct {
 	SubscribedAt time.Time `gorm:"not null"`
 }
 
-// PossibleReviewer links a GitLab repository with a GitLab user for potential reviewing.
 type PossibleReviewer struct {
 	gorm.Model
 	RepositoryID uint       `gorm:"not null"`
@@ -259,7 +238,6 @@ type ReleaseManager struct {
 	User         User       `gorm:"constraint:OnDelete:CASCADE;"`
 }
 
-// VKMessage represents a message received by the bot.
 type VKMessage struct {
 	gorm.Model
 	MessageID     string `gorm:"uniqueIndex;not null"` // unique message identifier
@@ -326,7 +304,6 @@ type ReleaseLabel struct {
 	LabelName    string     `gorm:"not null;uniqueIndex:idx_release_label_unique,priority:2"`
 }
 
-// MRActionType defines the type of action recorded for an MR.
 type MRActionType string
 
 const (
@@ -362,7 +339,6 @@ type MRAction struct {
 	Notified       bool         `gorm:"default:false;index"` // Whether DM notification was sent for this action
 }
 
-// MRComment tracks discussion comments with resolved state.
 type MRComment struct {
 	gorm.Model
 	MergeRequestID     uint         `gorm:"not null;index"`
