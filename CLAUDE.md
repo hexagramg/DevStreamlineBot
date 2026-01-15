@@ -72,6 +72,7 @@ Copy `config/config-example.yaml` to `config.yaml` in the project root and fill 
    - `vk_command_consumer.go`: Processes VK messages for slash commands (/subscribe, /unsubscribe, /reviewers, /reviews, /send_digest, /get_mr_info)
    - `mr_reviewer_consumer.go`: Auto-assigns reviewers to new MRs using weighted random selection based on recent workload, notifies subscribed chats
    - `review_digest_consumer.go`: Sends periodic review digests
+   - `auto_release_consumer.go`: Manages automatic release branch creation, MR retargeting, and release MR description updates
 
 ### Data Model (models/models.go)
 
@@ -88,6 +89,7 @@ Key entities with GORM:
 - `Holiday` - Non-working days per repository (excluded from SLA calculations)
 - `MRComment` - Tracked comments on MRs (resolvable/resolved status)
 - `MRAction` - Timeline of MR events for state tracking
+- `AutoReleaseBranchConfig` - Auto-release settings per repository (ReleaseBranchPrefix, DevBranchName)
 
 ### Key Patterns
 
@@ -159,3 +161,9 @@ MR states are derived dynamically based on DB data (not stored as a field):
 - `/holidays` - List configured holidays
 - `/holidays date1 date2 ...` - Add holidays (format: DD.MM.YYYY)
 - `/holidays remove date1 date2 ...` - Remove specific holidays
+
+### Release Management
+- `/auto_release_branch <prefix> : <dev_branch>` - Enable auto-release branches (e.g., `release : develop`)
+- `/auto_release_branch` - Disable auto-release branches for subscribed repos
+
+**Note**: Requires a release label to be configured. Creates branches named `{prefix}_{YYYY-MM-DD}_{sha[:6]}`, automatically retargets MRs (except blocked ones), and maintains release MR descriptions with included changes.

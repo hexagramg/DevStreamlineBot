@@ -9,6 +9,7 @@ A bot that automates code review assignments in GitLab. It integrates with VK Te
 - **SLA tracking**: Track review and fix times with configurable SLAs, excluding weekends and holidays
 - **Review digests**: Send periodic summaries of pending reviews to chat
 - **Vacation management**: Mark users as on vacation to exclude them from reviewer selection
+- **Auto-release branches**: Automatically create release branches, retarget MRs, and maintain release MR descriptions with included changes
 
 ## Getting Started
 
@@ -131,6 +132,15 @@ Add the bot to a VK Teams chat and use these commands:
 | `/holidays date1 date2 ...` | Add holidays (format: DD.MM.YYYY) |
 | `/holidays remove date1 ...` | Remove specific holidays |
 
+### Release Management
+
+| Command | Description |
+|---------|-------------|
+| `/auto_release_branch <prefix> : <dev_branch>` | Enable auto-release branches (e.g., `/auto_release_branch release : develop`) |
+| `/auto_release_branch` | Disable auto-release branches for subscribed repos |
+
+**Note**: Auto-release branch functionality requires a release label to be configured for the repository.
+
 ## How It Works
 
 ### Reviewer Assignment
@@ -149,3 +159,23 @@ The bot tracks time spent in each MR state:
 - **on_fixes**: Author addressing reviewer comments
 
 Working time excludes weekends and configured holidays.
+
+### Auto-Release Branches
+
+When enabled, the bot automates release branch management:
+
+1. **Branch creation**: Creates a release branch named `{prefix}_{YYYY-MM-DD}_{commit_sha[:6]}` from the dev branch
+2. **Release MR**: Creates a merge request with the configured release label, targeting the dev branch
+3. **MR retargeting**: Automatically retargets open MRs from the dev branch to the release branch (except blocked MRs)
+4. **Description updates**: Keeps the release MR description updated with a list of included MRs:
+   ```
+   ---
+   ## Included MRs
+   - [!123 Feature title](https://gitlab.com/...) by @author
+   - [!124 Another feature](https://gitlab.com/...) by @developer
+   ```
+5. **Continuous releases**: When a release MR is merged, a new release branch is automatically created
+
+**Requirements**:
+- Repository must have a release label configured (used to identify release MRs)
+- Optional: Configure block labels to prevent specific MRs from being retargeted
