@@ -31,6 +31,31 @@ Copy `config/config-example.yaml` to `config.yaml` in the project root and fill 
 - `vk.base_url`, `vk.token`
 - `database.dsn` (SQLite file path)
 
+## Code Style
+
+### Comments
+
+- **Never write obvious comments** that just restate what the code does
+- **Only add comments for**:
+  - Complex algorithms or non-obvious logic
+  - Function/method docstrings explaining purpose and edge cases
+  - The "why" behind design decisions, not the "what"
+- **Never include in comments**:
+  - Task descriptions or requirements
+  - Difficulty assessments
+  - Implementation progress notes
+  - Anything unrelated to the code logic itself
+
+**Good comment examples:**
+- Algorithm explanations with enumerated steps
+- Edge case documentation
+- Design rationale for custom types/patterns
+
+**Avoid:**
+- `x = 5 // set x to 5`
+- `// TODO: implement this feature`
+- `// This was a complex task`
+
 ## Architecture
 
 ### Core Flow
