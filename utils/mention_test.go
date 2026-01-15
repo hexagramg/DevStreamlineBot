@@ -164,7 +164,7 @@ func TestBuildEnhancedReviewDigest_Empty(t *testing.T) {
 }
 
 func TestBuildUserActionsDigest_Empty(t *testing.T) {
-	result := BuildUserActionsDigest(nil, []DigestMR{}, []DigestMR{}, nil, "testuser")
+	result := BuildUserActionsDigest(nil, []DigestMR{}, []DigestMR{}, []DigestMR{}, []DigestMR{}, "testuser")
 
 	expected := "No pending actions for testuser."
 	if result != expected {

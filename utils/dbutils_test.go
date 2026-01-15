@@ -403,7 +403,7 @@ func TestFindUserActionMRs_ExcludesReleaseLabeledReviewerMR(t *testing.T) {
 	// Configure release label
 	testutils.CreateReleaseLabel(db, repo, "release")
 
-	reviewMRs, _, err := FindUserActionMRs(db, reviewer.ID)
+	reviewMRs, _, _, err := FindUserActionMRs(db, reviewer.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestFindUserActionMRs_ExcludesReleaseLabeledAuthorMR(t *testing.T) {
 	// Configure release label
 	testutils.CreateReleaseLabel(db, repo, "release")
 
-	_, fixesMRs, err := FindUserActionMRs(db, author.ID)
+	_, fixesMRs, _, err := FindUserActionMRs(db, author.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestFindUserActionMRs_IncludesNormalMRs(t *testing.T) {
 	mr := mrFactory.Create(repo, author)
 	testutils.AssignReviewers(db, &mr, reviewer)
 
-	reviewMRs, _, err := FindUserActionMRs(db, reviewer.ID)
+	reviewMRs, _, _, err := FindUserActionMRs(db, reviewer.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

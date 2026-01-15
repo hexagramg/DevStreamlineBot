@@ -8,16 +8,20 @@ import (
 
 // MockMergeRequestsService is a mock implementation of GitLabMergeRequestsService.
 type MockMergeRequestsService struct {
-	UpdateMergeRequestFunc       func(pid interface{}, mergeRequest int, opt *gitlab.UpdateMergeRequestOptions, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error)
-	GetMergeRequestApprovalsFunc func(pid interface{}, mergeRequest int, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequestApprovals, *gitlab.Response, error)
-	ListProjectMergeRequestsFunc func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error)
-	GetMergeRequestFunc          func(pid interface{}, mergeRequest int, opt *gitlab.GetMergeRequestsOptions, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error)
+	UpdateMergeRequestFunc         func(pid interface{}, mergeRequest int, opt *gitlab.UpdateMergeRequestOptions, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error)
+	GetMergeRequestApprovalsFunc   func(pid interface{}, mergeRequest int, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequestApprovals, *gitlab.Response, error)
+	ListProjectMergeRequestsFunc   func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error)
+	GetMergeRequestFunc            func(pid interface{}, mergeRequest int, opt *gitlab.GetMergeRequestsOptions, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error)
+	CreateMergeRequestFunc         func(pid interface{}, opt *gitlab.CreateMergeRequestOptions, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error)
+	GetMergeRequestCommitsFunc     func(pid interface{}, mergeRequest int, opt *gitlab.GetMergeRequestCommitsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.Commit, *gitlab.Response, error)
 
 	// Call tracking
 	UpdateMergeRequestCalls       []UpdateMergeRequestCall
 	GetMergeRequestApprovalsCalls []GetMergeRequestApprovalsCall
 	ListProjectMergeRequestsCalls []ListProjectMergeRequestsCall
 	GetMergeRequestCalls          []GetMergeRequestCall
+	CreateMergeRequestCalls       []CreateMergeRequestCall
+	GetMergeRequestCommitsCalls   []GetMergeRequestCommitsCall
 }
 
 // UpdateMergeRequestCall tracks a call to UpdateMergeRequest.
@@ -44,6 +48,19 @@ type GetMergeRequestCall struct {
 	PID          interface{}
 	MergeRequest int
 	Opt          *gitlab.GetMergeRequestsOptions
+}
+
+// CreateMergeRequestCall tracks a call to CreateMergeRequest.
+type CreateMergeRequestCall struct {
+	PID interface{}
+	Opt *gitlab.CreateMergeRequestOptions
+}
+
+// GetMergeRequestCommitsCall tracks a call to GetMergeRequestCommits.
+type GetMergeRequestCommitsCall struct {
+	PID          interface{}
+	MergeRequest int
+	Opt          *gitlab.GetMergeRequestCommitsOptions
 }
 
 // UpdateMergeRequest implements the interface method.
@@ -92,6 +109,31 @@ func (m *MockMergeRequestsService) GetMergeRequest(pid interface{}, mergeRequest
 	})
 	if m.GetMergeRequestFunc != nil {
 		return m.GetMergeRequestFunc(pid, mergeRequest, opt, options...)
+	}
+	return nil, NewMockResponse(0), nil
+}
+
+// CreateMergeRequest implements the interface method.
+func (m *MockMergeRequestsService) CreateMergeRequest(pid interface{}, opt *gitlab.CreateMergeRequestOptions, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+	m.CreateMergeRequestCalls = append(m.CreateMergeRequestCalls, CreateMergeRequestCall{
+		PID: pid,
+		Opt: opt,
+	})
+	if m.CreateMergeRequestFunc != nil {
+		return m.CreateMergeRequestFunc(pid, opt, options...)
+	}
+	return nil, NewMockResponse(0), nil
+}
+
+// GetMergeRequestCommits implements the interface method.
+func (m *MockMergeRequestsService) GetMergeRequestCommits(pid interface{}, mergeRequest int, opt *gitlab.GetMergeRequestCommitsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.Commit, *gitlab.Response, error) {
+	m.GetMergeRequestCommitsCalls = append(m.GetMergeRequestCommitsCalls, GetMergeRequestCommitsCall{
+		PID:          pid,
+		MergeRequest: mergeRequest,
+		Opt:          opt,
+	})
+	if m.GetMergeRequestCommitsFunc != nil {
+		return m.GetMergeRequestCommitsFunc(pid, mergeRequest, opt, options...)
 	}
 	return nil, NewMockResponse(0), nil
 }
@@ -211,4 +253,50 @@ func NewMockResponse404() *gitlab.Response {
 		},
 		NextPage: 0,
 	}
+}
+
+// MockBranchesService is a mock implementation of GitLabBranchesService.
+type MockBranchesService struct {
+	GetBranchFunc    func(pid interface{}, branch string, options ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error)
+	CreateBranchFunc func(pid interface{}, opt *gitlab.CreateBranchOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error)
+
+	// Call tracking
+	GetBranchCalls    []GetBranchCall
+	CreateBranchCalls []CreateBranchCall
+}
+
+// GetBranchCall tracks a call to GetBranch.
+type GetBranchCall struct {
+	PID    interface{}
+	Branch string
+}
+
+// CreateBranchCall tracks a call to CreateBranch.
+type CreateBranchCall struct {
+	PID interface{}
+	Opt *gitlab.CreateBranchOptions
+}
+
+// GetBranch implements the interface method.
+func (m *MockBranchesService) GetBranch(pid interface{}, branch string, options ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
+	m.GetBranchCalls = append(m.GetBranchCalls, GetBranchCall{
+		PID:    pid,
+		Branch: branch,
+	})
+	if m.GetBranchFunc != nil {
+		return m.GetBranchFunc(pid, branch, options...)
+	}
+	return nil, NewMockResponse(0), nil
+}
+
+// CreateBranch implements the interface method.
+func (m *MockBranchesService) CreateBranch(pid interface{}, opt *gitlab.CreateBranchOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
+	m.CreateBranchCalls = append(m.CreateBranchCalls, CreateBranchCall{
+		PID: pid,
+		Opt: opt,
+	})
+	if m.CreateBranchFunc != nil {
+		return m.CreateBranchFunc(pid, opt, options...)
+	}
+	return nil, NewMockResponse(0), nil
 }

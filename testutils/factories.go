@@ -39,6 +39,7 @@ func SetupTestDB(t *testing.T) *gorm.DB {
 		&models.BlockLabel{},
 		&models.ReleaseLabel{},
 		&models.ReleaseManager{},
+		&models.AutoReleaseBranchConfig{},
 	)
 	if err != nil {
 		t.Fatalf("failed to migrate test database: %v", err)
@@ -406,4 +407,14 @@ func CreateReleaseManager(db *gorm.DB, repo models.Repository, user models.User)
 
 func AssignApprovers(db *gorm.DB, mr *models.MergeRequest, approvers ...models.User) {
 	db.Model(mr).Association("Approvers").Append(approvers)
+}
+
+func CreateAutoReleaseBranchConfig(db *gorm.DB, repo models.Repository, prefix, devBranch string) models.AutoReleaseBranchConfig {
+	config := models.AutoReleaseBranchConfig{
+		RepositoryID:        repo.ID,
+		ReleaseBranchPrefix: prefix,
+		DevBranchName:       devBranch,
+	}
+	db.Create(&config)
+	return config
 }

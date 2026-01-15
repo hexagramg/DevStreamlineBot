@@ -78,6 +78,8 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleEnsureLabelCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/release_managers") {
 		c.handleReleaseManagersCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/auto_release_branch") {
+		c.handleAutoReleaseBranchCommand(msg, from)
 	}
 }
 
@@ -165,6 +167,7 @@ func (c *VKCommandConsumer) handleSubscribeCommand(msg *botgolang.Message, from 
 		c.db.Where("repository_id = ?", repo.ID).Delete(&models.RepositorySLA{})
 		c.db.Where("repository_id = ?", repo.ID).Delete(&models.Holiday{})
 		c.db.Where("repository_id = ?", repo.ID).Delete(&models.BlockLabel{})
+		c.db.Where("repository_id = ?", repo.ID).Delete(&models.AutoReleaseBranchConfig{})
 	}
 
 	subscription := models.RepositorySubscription{
@@ -220,6 +223,15 @@ func (c *VKCommandConsumer) handleSubscribeCommand(msg *botgolang.Message, from 
 		c.db.Where("repository_id = ?", sourceRepoID).Find(&existingBlockLabels)
 		for _, bl := range existingBlockLabels {
 			c.db.Create(&models.BlockLabel{RepositoryID: repo.ID, LabelName: bl.LabelName})
+		}
+
+		var existingAutoReleaseConfig models.AutoReleaseBranchConfig
+		if err := c.db.Where("repository_id = ?", sourceRepoID).First(&existingAutoReleaseConfig).Error; err == nil {
+			c.db.Create(&models.AutoReleaseBranchConfig{
+				RepositoryID:        repo.ID,
+				ReleaseBranchPrefix: existingAutoReleaseConfig.ReleaseBranchPrefix,
+				DevBranchName:       existingAutoReleaseConfig.DevBranchName,
+			})
 		}
 	}
 
@@ -1401,6 +1413,109 @@ func isValidHexColor(s string) bool {
 		}
 	}
 	return true
+}
+
+func (c *VKCommandConsumer) handleAutoReleaseBranchCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var subs []models.RepositorySubscription
+	c.db.Preload("Repository").Where("chat_id = ?", chat.ID).Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+
+	repoIDs := make([]uint, len(subs))
+	for i, s := range subs {
+		repoIDs[i] = s.RepositoryID
+	}
+
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/auto_release_branch"))
+
+	// No arguments: clear config
+	if argStr == "" {
+		if err := c.db.Where("repository_id IN ?", repoIDs).Delete(&models.AutoReleaseBranchConfig{}).Error; err != nil {
+			c.sendReply(msg, "Failed to clear auto-release branch settings")
+			return
+		}
+		c.sendReply(msg, "Auto-release branch settings cleared for subscribed repositories")
+		return
+	}
+
+	// Parse: <prefix> : <dev-branch>
+	parts := strings.SplitN(argStr, ":", 2)
+	if len(parts) != 2 {
+		c.sendReply(msg, "Usage: /auto_release_branch <release-branch-prefix> : <main-dev-branch>\nExample: /auto_release_branch release : develop\nCall without arguments to clear settings.")
+		return
+	}
+
+	prefix := strings.TrimSpace(parts[0])
+	devBranch := strings.TrimSpace(parts[1])
+
+	if prefix == "" || devBranch == "" {
+		c.sendReply(msg, "Both prefix and dev branch must be specified.\nUsage: /auto_release_branch <release-branch-prefix> : <main-dev-branch>")
+		return
+	}
+
+	// Check that repositories have release labels configured
+	var releaseLabels []models.ReleaseLabel
+	c.db.Where("repository_id IN ?", repoIDs).Find(&releaseLabels)
+	if len(releaseLabels) == 0 {
+		c.sendReply(msg, "Auto-release requires a release label. Use /add_release_label first.")
+		return
+	}
+
+	reposWithReleaseLabel := make(map[uint]bool)
+	for _, rl := range releaseLabels {
+		reposWithReleaseLabel[rl.RepositoryID] = true
+	}
+
+	var configuredRepos []string
+	var skippedRepos []string
+
+	for _, sub := range subs {
+		if !reposWithReleaseLabel[sub.RepositoryID] {
+			skippedRepos = append(skippedRepos, sub.Repository.Name+" (no release label)")
+			continue
+		}
+
+		config := models.AutoReleaseBranchConfig{
+			RepositoryID:        sub.RepositoryID,
+			ReleaseBranchPrefix: prefix,
+			DevBranchName:       devBranch,
+		}
+
+		if err := c.db.Where(models.AutoReleaseBranchConfig{RepositoryID: sub.RepositoryID}).
+			Assign(config).
+			FirstOrCreate(&config).Error; err != nil {
+			log.Printf("failed to save auto-release config for repo %d: %v", sub.RepositoryID, err)
+			skippedRepos = append(skippedRepos, sub.Repository.Name+" (error)")
+			continue
+		}
+
+		configuredRepos = append(configuredRepos, sub.Repository.Name)
+	}
+
+	var reply string
+	if len(configuredRepos) > 0 {
+		reply = fmt.Sprintf("Auto-release configured (prefix: '%s', dev: '%s') for: %s",
+			prefix, devBranch, strings.Join(configuredRepos, ", "))
+	}
+	if len(skippedRepos) > 0 {
+		if reply != "" {
+			reply += "\n"
+		}
+		reply += fmt.Sprintf("Skipped: %s", strings.Join(skippedRepos, ", "))
+	}
+	if reply == "" {
+		reply = "No repositories were configured."
+	}
+	c.sendReply(msg, reply)
 }
 
 func (c *VKCommandConsumer) sendReply(msg *botgolang.Message, text string) {

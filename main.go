@@ -60,6 +60,7 @@ func main() {
 		&models.Chat{}, &models.VKUser{}, &models.VKMessage{}, &models.RepositorySubscription{}, &models.PossibleReviewer{},
 		&models.LabelReviewer{}, &models.RepositorySLA{}, &models.Holiday{}, &models.MRAction{}, &models.MRComment{},
 		&models.DailyDigestPreference{}, &models.BlockLabel{}, &models.ReleaseManager{}, &models.ReleaseLabel{},
+		&models.AutoReleaseBranchConfig{},
 	); err != nil {
 		log.Fatalf("failed to migrate database schemas: %v", err)
 	}
@@ -134,6 +135,8 @@ func main() {
 	personalDigestConsumer := consumers.NewPersonalDigestConsumer(db, vkBot)
 	personalDigestConsumer.StartConsumer()
 
+	autoReleaseConsumer := consumers.NewAutoReleaseConsumer(db, glClient)
+
 	go func() {
 		ticker := time.NewTicker(cfg.Gitlab.PollInterval)
 		defer ticker.Stop()
@@ -142,6 +145,8 @@ func main() {
 			polling.PollRepositories(db, glClient)
 			polling.PollMergeRequests(db, glClient)
 			mrReviewerConsumer.AssignReviewers()
+			autoReleaseConsumer.ProcessAutoReleaseBranches()
+			autoReleaseConsumer.ProcessReleaseMRDescriptions()
 		}
 	}()
 

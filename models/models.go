@@ -304,6 +304,16 @@ type ReleaseLabel struct {
 	LabelName    string     `gorm:"not null;uniqueIndex:idx_release_label_unique,priority:2"`
 }
 
+// AutoReleaseBranchConfig stores auto-release branch settings per repository.
+// Only works when a ReleaseLabel is also configured for the repository.
+type AutoReleaseBranchConfig struct {
+	gorm.Model
+	RepositoryID        uint       `gorm:"uniqueIndex;not null"`
+	Repository          Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	ReleaseBranchPrefix string     `gorm:"not null"`
+	DevBranchName       string     `gorm:"not null"`
+}
+
 type MRActionType string
 
 const (
