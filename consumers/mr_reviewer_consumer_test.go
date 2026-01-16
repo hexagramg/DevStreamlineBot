@@ -835,8 +835,8 @@ func TestStateChange_OnFixesToOnReview(t *testing.T) {
 	if sentMessages[0].ChatID != "reviewer@example.com" {
 		t.Errorf("Expected message to reviewer@example.com, got %s", sentMessages[0].ChatID)
 	}
-	if !strings.Contains(sentMessages[0].Text, "✅") {
-		t.Error("Expected re-review notification with ✅ emoji")
+	if !strings.Contains(sentMessages[0].Text, "ready for re-review") {
+		t.Error("Expected re-review notification message")
 	}
 
 	// Verify LastNotifiedState updated
@@ -1457,5 +1457,162 @@ func TestSelectReviewers_MixedLabels_IgnoresReleaseLabel(t *testing.T) {
 	}
 	if !backendSelected {
 		t.Error("Expected backend reviewer to be selected via label matching")
+	}
+}
+
+// ============================================================================
+// Fully Approved Notification Tests
+// ============================================================================
+
+// TestProcessFullyApprovedNotifications_AuthorAndReleaseManagerNotified verifies
+// that both author and release managers are notified when MR is fully approved.
+func TestProcessFullyApprovedNotifications_AuthorAndReleaseManagerNotified(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	releaseManager := userFactory.Create(testutils.WithEmail("rm@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.CreateReleaseManager(db, repo, releaseManager)
+
+	testutils.CreateMRAction(db, mr, models.ActionFullyApproved)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
+	consumer.ProcessFullyApprovedNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 2 {
+		t.Fatalf("Expected 2 messages (author + RM), got %d", len(sentMessages))
+	}
+
+	recipients := make(map[string]bool)
+	for _, msg := range sentMessages {
+		recipients[msg.ChatID] = true
+	}
+	if !recipients["author@example.com"] {
+		t.Error("Expected author to receive notification")
+	}
+	if !recipients["rm@example.com"] {
+		t.Error("Expected release manager to receive notification")
+	}
+}
+
+// TestProcessFullyApprovedNotifications_AuthorOnly_NoReleaseManagers verifies
+// author gets notification even when no release managers are configured.
+func TestProcessFullyApprovedNotifications_AuthorOnly_NoReleaseManagers(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+
+	testutils.CreateMRAction(db, mr, models.ActionFullyApproved)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
+	consumer.ProcessFullyApprovedNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 1 {
+		t.Fatalf("Expected 1 message (author only), got %d", len(sentMessages))
+	}
+	if sentMessages[0].ChatID != "author@example.com" {
+		t.Errorf("Expected message to author, got %s", sentMessages[0].ChatID)
+	}
+}
+
+// ============================================================================
+// Unapproved Reviewer Notification Tests
+// ============================================================================
+
+// TestStateChange_OnlyUnapprovedReviewersNotified verifies that only unapproved
+// reviewers get re-review notification when MR transitions from on_fixes to on_review.
+func TestStateChange_OnlyUnapprovedReviewersNotified(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer1 := userFactory.Create(testutils.WithEmail("reviewer1@example.com"))
+	reviewer2 := userFactory.Create(testutils.WithEmail("reviewer2@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2)
+
+	// reviewer1 has approved, reviewer2 has not
+	testutils.AssignApprovers(db, &mr, reviewer1)
+
+	db.Model(&mr).Update("last_notified_state", "on_fixes")
+
+	comment := testutils.CreateMRComment(db, mr, reviewer1, 123,
+		testutils.WithResolvable(),
+		testutils.WithResolved(&author),
+	)
+	testutils.CreateMRAction(db, mr, models.ActionCommentResolved,
+		testutils.WithActor(author),
+		testutils.WithCommentID(comment.ID),
+	)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
+	consumer.ProcessStateChangeNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 1 {
+		t.Fatalf("Expected 1 message (only unapproved reviewer), got %d", len(sentMessages))
+	}
+	if sentMessages[0].ChatID != "reviewer2@example.com" {
+		t.Errorf("Expected message to reviewer2@example.com (unapproved), got %s", sentMessages[0].ChatID)
+	}
+}
+
+// TestStateChange_AllReviewersApproved_NoReReviewNotification verifies no one
+// gets notified if all reviewers already approved.
+func TestStateChange_AllReviewersApproved_NoReReviewNotification(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer1 := userFactory.Create(testutils.WithEmail("reviewer1@example.com"))
+	reviewer2 := userFactory.Create(testutils.WithEmail("reviewer2@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2)
+
+	// Both reviewers have approved
+	testutils.AssignApprovers(db, &mr, reviewer1, reviewer2)
+
+	db.Model(&mr).Update("last_notified_state", "on_fixes")
+
+	comment := testutils.CreateMRComment(db, mr, reviewer1, 123,
+		testutils.WithResolvable(),
+		testutils.WithResolved(&author),
+	)
+	testutils.CreateMRAction(db, mr, models.ActionCommentResolved,
+		testutils.WithActor(author),
+		testutils.WithCommentID(comment.ID),
+	)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
+	consumer.ProcessStateChangeNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Fatalf("Expected 0 messages (all reviewers approved), got %d", len(sentMessages))
 	}
 }

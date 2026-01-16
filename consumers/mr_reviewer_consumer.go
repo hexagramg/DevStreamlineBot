@@ -585,7 +585,8 @@ func (c *MRReviewerConsumer) AssignReviewers() {
 
 		for _, reviewer := range newReviewers {
 			c.notifyUserDM(reviewer.Email, fmt.Sprintf(
-				"🔍 New MR for review:\n%s\n%s",
+				"🔍 New MR for review [%s]:\n%s\n%s",
+				mr.Repository.Name,
 				mr.Title,
 				mr.WebURL,
 			))
@@ -614,6 +615,7 @@ func (c *MRReviewerConsumer) ProcessReviewerRemovalNotifications() {
 	var actions []models.MRAction
 	err := c.db.
 		Preload("MergeRequest").
+		Preload("MergeRequest.Repository").
 		Preload("TargetUser").
 		Where("notified = ? AND action_type = ?", false, models.ActionReviewerRemoved).
 		Order("timestamp ASC").
@@ -631,7 +633,8 @@ func (c *MRReviewerConsumer) ProcessReviewerRemovalNotifications() {
 		}
 
 		c.notifyUserDM(action.TargetUser.Email, fmt.Sprintf(
-			"You were removed from review:\n%s\n%s",
+			"You were removed from review [%s]:\n%s\n%s",
+			action.MergeRequest.Repository.Name,
 			action.MergeRequest.Title,
 			action.MergeRequest.WebURL,
 		))
@@ -644,6 +647,7 @@ func (c *MRReviewerConsumer) ProcessFullyApprovedNotifications() {
 	err := c.db.
 		Preload("MergeRequest").
 		Preload("MergeRequest.Repository").
+		Preload("MergeRequest.Author").
 		Where("notified = ? AND action_type = ?", false, models.ActionFullyApproved).
 		Order("timestamp ASC").
 		Limit(100).
@@ -655,6 +659,15 @@ func (c *MRReviewerConsumer) ProcessFullyApprovedNotifications() {
 
 	for _, action := range actions {
 		mr := action.MergeRequest
+
+		if mr.Author.Email != "" {
+			c.notifyUserDM(mr.Author.Email, fmt.Sprintf(
+				"Your MR is fully approved [%s]:\n%s\n%s",
+				mr.Repository.Name,
+				mr.Title,
+				mr.WebURL,
+			))
+		}
 
 		var releaseManagers []models.ReleaseManager
 		if err := c.db.Preload("User").Where("repository_id = ?", mr.RepositoryID).Find(&releaseManagers).Error; err != nil {
@@ -668,7 +681,8 @@ func (c *MRReviewerConsumer) ProcessFullyApprovedNotifications() {
 				continue
 			}
 			c.notifyUserDM(rm.User.Email, fmt.Sprintf(
-				"✅ MR ready for release:\n%s\n%s\nAll reviewers approved",
+				"✅ MR ready for release [%s]:\n%s\n%s\nAll reviewers approved",
+				mr.Repository.Name,
 				mr.Title,
 				mr.WebURL,
 			))
@@ -684,6 +698,8 @@ func (c *MRReviewerConsumer) ProcessStateChangeNotifications() {
 		Preload("MergeRequest").
 		Preload("MergeRequest.Author").
 		Preload("MergeRequest.Reviewers").
+		Preload("MergeRequest.Approvers").
+		Preload("MergeRequest.Repository").
 		Where("notified = ? AND action_type IN ?", false, []models.MRActionType{
 			models.ActionCommentAdded,
 			models.ActionCommentResolved,
@@ -717,16 +733,25 @@ func (c *MRReviewerConsumer) ProcessStateChangeNotifications() {
 			switch utils.MRState(currentState) {
 			case utils.StateOnFixes:
 				c.notifyUserDM(mr.Author.Email, fmt.Sprintf(
-					"🔧 Your MR needs fixes:\n%s\n%s\nReviewer left comments",
+					"🔧 Your MR needs fixes [%s]:\n%s\n%s\nReviewer left comments",
+					mr.Repository.Name,
 					mr.Title,
 					mr.WebURL,
 				))
 
 			case utils.StateOnReview:
 				if mr.LastNotifiedState == string(utils.StateOnFixes) {
+					approverIDs := make(map[uint]bool)
+					for _, approver := range mr.Approvers {
+						approverIDs[approver.ID] = true
+					}
 					for _, reviewer := range mr.Reviewers {
+						if approverIDs[reviewer.ID] {
+							continue
+						}
 						c.notifyUserDM(reviewer.Email, fmt.Sprintf(
-							"✅ MR ready for re-review:\n%s\n%s\nAuthor addressed comments",
+							"MR ready for re-review [%s]:\n%s\n%s",
+							mr.Repository.Name,
 							mr.Title,
 							mr.WebURL,
 						))

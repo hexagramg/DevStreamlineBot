@@ -145,6 +145,9 @@ func main() {
 			polling.PollRepositories(db, glClient)
 			polling.PollMergeRequests(db, glClient)
 			mrReviewerConsumer.AssignReviewers()
+			mrReviewerConsumer.ProcessStateChangeNotifications()
+			mrReviewerConsumer.ProcessReviewerRemovalNotifications()
+			mrReviewerConsumer.ProcessFullyApprovedNotifications()
 			autoReleaseConsumer.ProcessAutoReleaseBranches()
 			autoReleaseConsumer.ProcessReleaseMRDescriptions()
 		}
