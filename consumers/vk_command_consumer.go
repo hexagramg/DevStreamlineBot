@@ -1381,22 +1381,76 @@ type labelSpec struct {
 }
 
 func parseLabelSpecs(argStr string) []labelSpec {
-	entries := strings.Split(argStr, ",")
 	var specs []labelSpec
+	argStr = strings.TrimSpace(argStr)
+	if argStr == "" {
+		return specs
+	}
+
+	entries := splitRespectingQuotes(argStr, ',')
+
 	for _, entry := range entries {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
 		}
+
+		name, color := parseLabelEntry(entry)
+		if name != "" {
+			specs = append(specs, labelSpec{name: name, color: color})
+		}
+	}
+	return specs
+}
+
+func splitRespectingQuotes(s string, delim rune) []string {
+	var result []string
+	var current strings.Builder
+	inQuotes := false
+
+	for _, r := range s {
+		if r == '"' {
+			inQuotes = !inQuotes
+			current.WriteRune(r)
+		} else if r == delim && !inQuotes {
+			result = append(result, current.String())
+			current.Reset()
+		} else {
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 {
+		result = append(result, current.String())
+	}
+	return result
+}
+
+func parseLabelEntry(entry string) (name, color string) {
+	color = "#dc143c"
+	entry = strings.TrimSpace(entry)
+
+	if strings.HasPrefix(entry, "\"") {
+		endQuote := strings.Index(entry[1:], "\"")
+		if endQuote == -1 {
+			name = strings.Trim(entry, "\"")
+			return
+		}
+		name = entry[1 : endQuote+1]
+		rest := strings.TrimSpace(entry[endQuote+2:])
+		if strings.HasPrefix(rest, "#") && isValidHexColor(rest) {
+			color = rest
+		}
+	} else {
 		parts := strings.Fields(entry)
-		name := parts[0]
-		color := "#dc143c"
+		if len(parts) == 0 {
+			return "", ""
+		}
+		name = parts[0]
 		if len(parts) >= 2 && strings.HasPrefix(parts[1], "#") && isValidHexColor(parts[1]) {
 			color = parts[1]
 		}
-		specs = append(specs, labelSpec{name: name, color: color})
 	}
-	return specs
+	return
 }
 
 func isValidHexColor(s string) bool {
