@@ -188,6 +188,7 @@ func TestProcessAutoReleaseBranches_ExistingReleaseMR(t *testing.T) {
 	existingReleaseMR := &gitlab.BasicMergeRequest{
 		IID:          10,
 		SourceBranch: "release_2024-01-01_abc123",
+		TargetBranch: "develop",
 		Labels:       gitlab.Labels{"release"},
 	}
 
@@ -196,10 +197,14 @@ func TestProcessAutoReleaseBranches_ExistingReleaseMR(t *testing.T) {
 		ListProjectMergeRequestsFunc: func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
 			listCallCount++
 			if listCallCount == 1 {
-				// First call: check for existing release MR
+				// First call: retargetOrphanedMRs lists all open MRs
 				return []*gitlab.BasicMergeRequest{existingReleaseMR}, mocks.NewMockResponse(0), nil
 			}
-			// Subsequent calls: retargeting MRs
+			if listCallCount == 2 {
+				// Second call: findOpenReleaseMR
+				return []*gitlab.BasicMergeRequest{existingReleaseMR}, mocks.NewMockResponse(0), nil
+			}
+			// Third call: retargetMRsToReleaseBranch
 			return []*gitlab.BasicMergeRequest{}, mocks.NewMockResponse(0), nil
 		},
 	}
@@ -273,12 +278,14 @@ func TestProcessAutoReleaseBranches_RetargetsMRsToReleaseBranch(t *testing.T) {
 	existingReleaseMR := &gitlab.BasicMergeRequest{
 		IID:          10,
 		SourceBranch: "release_2024-01-01_abc123",
+		TargetBranch: "develop",
 		Labels:       gitlab.Labels{"release"},
 	}
 
 	featureMR := &gitlab.BasicMergeRequest{
 		IID:          20,
 		SourceBranch: "feature-branch",
+		TargetBranch: "develop",
 		Labels:       gitlab.Labels{"feature"},
 	}
 
@@ -287,10 +294,14 @@ func TestProcessAutoReleaseBranches_RetargetsMRsToReleaseBranch(t *testing.T) {
 		ListProjectMergeRequestsFunc: func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
 			listCallCount++
 			if listCallCount == 1 {
-				// First call: check for existing release MR
+				// First call: retargetOrphanedMRs lists all open MRs
+				return []*gitlab.BasicMergeRequest{existingReleaseMR, featureMR}, mocks.NewMockResponse(0), nil
+			}
+			if listCallCount == 2 {
+				// Second call: findOpenReleaseMR
 				return []*gitlab.BasicMergeRequest{existingReleaseMR}, mocks.NewMockResponse(0), nil
 			}
-			// Second call: find MRs targeting dev branch
+			// Third call: retargetMRsToReleaseBranch finds MRs targeting dev
 			return []*gitlab.BasicMergeRequest{featureMR}, mocks.NewMockResponse(0), nil
 		},
 		UpdateMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.UpdateMergeRequestOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
@@ -831,26 +842,31 @@ func TestProcessAutoReleaseBranches_Pagination(t *testing.T) {
 	existingReleaseMR := &gitlab.BasicMergeRequest{
 		IID:          10,
 		SourceBranch: "release_2024-01-01_abc123",
+		TargetBranch: "develop",
 		Labels:       gitlab.Labels{"release"},
 	}
 
-	featureMR1 := &gitlab.BasicMergeRequest{IID: 20, SourceBranch: "feature1", Labels: gitlab.Labels{}}
-	featureMR2 := &gitlab.BasicMergeRequest{IID: 21, SourceBranch: "feature2", Labels: gitlab.Labels{}}
+	featureMR1 := &gitlab.BasicMergeRequest{IID: 20, SourceBranch: "feature1", TargetBranch: "develop", Labels: gitlab.Labels{}}
+	featureMR2 := &gitlab.BasicMergeRequest{IID: 21, SourceBranch: "feature2", TargetBranch: "develop", Labels: gitlab.Labels{}}
 
 	listCallCount := 0
 	mockMRs := &mocks.MockMergeRequestsService{
 		ListProjectMergeRequestsFunc: func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
 			listCallCount++
 			if listCallCount == 1 {
-				// First call: check for existing release MR
-				return []*gitlab.BasicMergeRequest{existingReleaseMR}, mocks.NewMockResponse(0), nil
+				// First call: retargetOrphanedMRs lists all open MRs
+				return []*gitlab.BasicMergeRequest{existingReleaseMR, featureMR1, featureMR2}, mocks.NewMockResponse(0), nil
 			}
 			if listCallCount == 2 {
-				// Second call: first page of MRs to retarget
-				return []*gitlab.BasicMergeRequest{featureMR1}, mocks.NewMockResponse(2), nil // NextPage=2
+				// Second call: findOpenReleaseMR
+				return []*gitlab.BasicMergeRequest{existingReleaseMR}, mocks.NewMockResponse(0), nil
 			}
 			if listCallCount == 3 {
-				// Third call: second page of MRs to retarget
+				// Third call: first page of MRs to retarget (retargetMRsToReleaseBranch)
+				return []*gitlab.BasicMergeRequest{featureMR1}, mocks.NewMockResponse(2), nil // NextPage=2
+			}
+			if listCallCount == 4 {
+				// Fourth call: second page of MRs to retarget
 				return []*gitlab.BasicMergeRequest{featureMR2}, mocks.NewMockResponse(0), nil
 			}
 			return []*gitlab.BasicMergeRequest{}, mocks.NewMockResponse(0), nil
@@ -949,5 +965,333 @@ func TestProcessReleaseMRDescriptions_CommitsPagination(t *testing.T) {
 	}
 	if !strings.Contains(updatedDescription, "[!101") {
 		t.Errorf("expected description to contain MR !101 from page 2")
+	}
+}
+
+// --- Orphaned MR Retargeting Tests ---
+
+func TestBranchExists_BranchFound(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	mockBranches := &mocks.MockBranchesService{
+		GetBranchFunc: func(pid interface{}, branch string, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
+			return &gitlab.Branch{Name: branch}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, mockBranches)
+
+	if !consumer.branchExists(123, "develop") {
+		t.Error("expected branchExists to return true for existing branch")
+	}
+}
+
+func TestBranchExists_BranchNotFound(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	mockBranches := &mocks.MockBranchesService{
+		GetBranchFunc: func(pid interface{}, branch string, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
+			return nil, mocks.NewMockResponse404(), errors.New("branch not found")
+		},
+	}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, mockBranches)
+
+	if consumer.branchExists(123, "deleted-branch") {
+		t.Error("expected branchExists to return false for non-existing branch")
+	}
+}
+
+func TestRetargetOrphanedMRs_RetargetsMRsWithDeletedTargetBranch(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	orphanedMR := &gitlab.BasicMergeRequest{
+		IID:          20,
+		SourceBranch: "feature-branch",
+		TargetBranch: "release_2024-01-01_deleted",
+		Labels:       gitlab.Labels{"feature"},
+	}
+
+	mockMRs := &mocks.MockMergeRequestsService{
+		ListProjectMergeRequestsFunc: func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+			return []*gitlab.BasicMergeRequest{orphanedMR}, mocks.NewMockResponse(0), nil
+		},
+		UpdateMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.UpdateMergeRequestOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			return &gitlab.MergeRequest{BasicMergeRequest: gitlab.BasicMergeRequest{IID: mergeRequest}}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	mockBranches := &mocks.MockBranchesService{
+		GetBranchFunc: func(pid interface{}, branch string, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
+			if branch == "release_2024-01-01_deleted" {
+				return nil, mocks.NewMockResponse404(), errors.New("branch not found")
+			}
+			return &gitlab.Branch{Name: branch}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer.retargetOrphanedMRs(123, "develop", "release")
+
+	if len(mockMRs.UpdateMergeRequestCalls) != 1 {
+		t.Fatalf("expected 1 UpdateMergeRequest call, got %d", len(mockMRs.UpdateMergeRequestCalls))
+	}
+
+	updateCall := mockMRs.UpdateMergeRequestCalls[0]
+	if updateCall.MergeRequest != 20 {
+		t.Errorf("expected MR !20 to be retargeted, got !%d", updateCall.MergeRequest)
+	}
+	if *updateCall.Opt.TargetBranch != "develop" {
+		t.Errorf("expected target branch 'develop', got %s", *updateCall.Opt.TargetBranch)
+	}
+}
+
+func TestRetargetOrphanedMRs_SkipsMRsAlreadyTargetingDev(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	mrTargetingDev := &gitlab.BasicMergeRequest{
+		IID:          20,
+		SourceBranch: "feature-branch",
+		TargetBranch: "develop",
+		Labels:       gitlab.Labels{"feature"},
+	}
+
+	mockMRs := &mocks.MockMergeRequestsService{
+		ListProjectMergeRequestsFunc: func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+			return []*gitlab.BasicMergeRequest{mrTargetingDev}, mocks.NewMockResponse(0), nil
+		},
+		UpdateMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.UpdateMergeRequestOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			return &gitlab.MergeRequest{BasicMergeRequest: gitlab.BasicMergeRequest{IID: mergeRequest}}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	mockBranches := &mocks.MockBranchesService{}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer.retargetOrphanedMRs(123, "develop", "release")
+
+	// Should not retarget MRs already targeting dev
+	if len(mockMRs.UpdateMergeRequestCalls) != 0 {
+		t.Errorf("expected no UpdateMergeRequest calls for MR targeting dev, got %d", len(mockMRs.UpdateMergeRequestCalls))
+	}
+
+	// Should not check branch existence for dev branch
+	if len(mockBranches.GetBranchCalls) != 0 {
+		t.Errorf("expected no GetBranch calls for MR targeting dev, got %d", len(mockBranches.GetBranchCalls))
+	}
+}
+
+func TestRetargetOrphanedMRs_SkipsMRsWithReleaseLabel(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	releaseMR := &gitlab.BasicMergeRequest{
+		IID:          10,
+		SourceBranch: "release_2024-01-01_abc123",
+		TargetBranch: "main",
+		Labels:       gitlab.Labels{"release"},
+	}
+
+	mockMRs := &mocks.MockMergeRequestsService{
+		ListProjectMergeRequestsFunc: func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+			return []*gitlab.BasicMergeRequest{releaseMR}, mocks.NewMockResponse(0), nil
+		},
+		UpdateMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.UpdateMergeRequestOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			return &gitlab.MergeRequest{BasicMergeRequest: gitlab.BasicMergeRequest{IID: mergeRequest}}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	mockBranches := &mocks.MockBranchesService{}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer.retargetOrphanedMRs(123, "develop", "release")
+
+	// Should not retarget release MRs
+	if len(mockMRs.UpdateMergeRequestCalls) != 0 {
+		t.Errorf("expected no UpdateMergeRequest calls for release MR, got %d", len(mockMRs.UpdateMergeRequestCalls))
+	}
+}
+
+func TestRetargetOrphanedMRs_IncludesBlockedMRs(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	blockedMR := &gitlab.BasicMergeRequest{
+		IID:          20,
+		SourceBranch: "feature-branch",
+		TargetBranch: "release_2024-01-01_deleted",
+		Labels:       gitlab.Labels{"blocked"},
+	}
+
+	mockMRs := &mocks.MockMergeRequestsService{
+		ListProjectMergeRequestsFunc: func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+			return []*gitlab.BasicMergeRequest{blockedMR}, mocks.NewMockResponse(0), nil
+		},
+		UpdateMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.UpdateMergeRequestOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			return &gitlab.MergeRequest{BasicMergeRequest: gitlab.BasicMergeRequest{IID: mergeRequest}}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	mockBranches := &mocks.MockBranchesService{
+		GetBranchFunc: func(pid interface{}, branch string, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
+			return nil, mocks.NewMockResponse404(), errors.New("branch not found")
+		},
+	}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer.retargetOrphanedMRs(123, "develop", "release")
+
+	// Should retarget blocked MRs (unlike normal retargeting which skips them)
+	if len(mockMRs.UpdateMergeRequestCalls) != 1 {
+		t.Fatalf("expected 1 UpdateMergeRequest call for blocked MR, got %d", len(mockMRs.UpdateMergeRequestCalls))
+	}
+
+	if mockMRs.UpdateMergeRequestCalls[0].MergeRequest != 20 {
+		t.Errorf("expected blocked MR !20 to be retargeted")
+	}
+}
+
+func TestRetargetOrphanedMRs_CachesBranchExistenceChecks(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	// Two MRs targeting the same deleted branch
+	mr1 := &gitlab.BasicMergeRequest{
+		IID:          20,
+		SourceBranch: "feature1",
+		TargetBranch: "release_2024-01-01_deleted",
+		Labels:       gitlab.Labels{},
+	}
+	mr2 := &gitlab.BasicMergeRequest{
+		IID:          21,
+		SourceBranch: "feature2",
+		TargetBranch: "release_2024-01-01_deleted",
+		Labels:       gitlab.Labels{},
+	}
+
+	mockMRs := &mocks.MockMergeRequestsService{
+		ListProjectMergeRequestsFunc: func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+			return []*gitlab.BasicMergeRequest{mr1, mr2}, mocks.NewMockResponse(0), nil
+		},
+		UpdateMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.UpdateMergeRequestOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			return &gitlab.MergeRequest{BasicMergeRequest: gitlab.BasicMergeRequest{IID: mergeRequest}}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	mockBranches := &mocks.MockBranchesService{
+		GetBranchFunc: func(pid interface{}, branch string, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
+			return nil, mocks.NewMockResponse404(), errors.New("branch not found")
+		},
+	}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer.retargetOrphanedMRs(123, "develop", "release")
+
+	// Should only check branch existence once (cached)
+	if len(mockBranches.GetBranchCalls) != 1 {
+		t.Errorf("expected 1 GetBranch call (cached), got %d", len(mockBranches.GetBranchCalls))
+	}
+
+	// Should still retarget both MRs
+	if len(mockMRs.UpdateMergeRequestCalls) != 2 {
+		t.Errorf("expected 2 UpdateMergeRequest calls, got %d", len(mockMRs.UpdateMergeRequestCalls))
+	}
+}
+
+func TestRetargetOrphanedMRs_DoesNotRetargetWhenBranchExists(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	mrTargetingExistingBranch := &gitlab.BasicMergeRequest{
+		IID:          20,
+		SourceBranch: "feature-branch",
+		TargetBranch: "some-existing-branch",
+		Labels:       gitlab.Labels{},
+	}
+
+	mockMRs := &mocks.MockMergeRequestsService{
+		ListProjectMergeRequestsFunc: func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+			return []*gitlab.BasicMergeRequest{mrTargetingExistingBranch}, mocks.NewMockResponse(0), nil
+		},
+		UpdateMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.UpdateMergeRequestOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			return &gitlab.MergeRequest{BasicMergeRequest: gitlab.BasicMergeRequest{IID: mergeRequest}}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	mockBranches := &mocks.MockBranchesService{
+		GetBranchFunc: func(pid interface{}, branch string, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
+			return &gitlab.Branch{Name: branch}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer.retargetOrphanedMRs(123, "develop", "release")
+
+	// Should not retarget MRs targeting existing branches
+	if len(mockMRs.UpdateMergeRequestCalls) != 0 {
+		t.Errorf("expected no UpdateMergeRequest calls when branch exists, got %d", len(mockMRs.UpdateMergeRequestCalls))
+	}
+}
+
+func TestProcessAutoReleaseBranches_CallsRetargetOrphanedMRsFirst(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	testutils.CreateReleaseLabel(db, repo, "release")
+	testutils.CreateAutoReleaseBranchConfig(db, repo, "release", "develop")
+
+	existingReleaseMR := &gitlab.BasicMergeRequest{
+		IID:          10,
+		SourceBranch: "release_2024-01-01_abc123",
+		Labels:       gitlab.Labels{"release"},
+	}
+
+	orphanedMR := &gitlab.BasicMergeRequest{
+		IID:          20,
+		SourceBranch: "feature-branch",
+		TargetBranch: "release_2024-01-01_deleted",
+		Labels:       gitlab.Labels{},
+	}
+
+	listCallCount := 0
+	mockMRs := &mocks.MockMergeRequestsService{
+		ListProjectMergeRequestsFunc: func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+			listCallCount++
+			if listCallCount == 1 {
+				// First call: retargetOrphanedMRs lists all open MRs
+				return []*gitlab.BasicMergeRequest{orphanedMR, existingReleaseMR}, mocks.NewMockResponse(0), nil
+			}
+			if listCallCount == 2 {
+				// Second call: findOpenReleaseMR
+				return []*gitlab.BasicMergeRequest{existingReleaseMR}, mocks.NewMockResponse(0), nil
+			}
+			// Third call: retargetMRsToReleaseBranch
+			return []*gitlab.BasicMergeRequest{}, mocks.NewMockResponse(0), nil
+		},
+		UpdateMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.UpdateMergeRequestOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			return &gitlab.MergeRequest{BasicMergeRequest: gitlab.BasicMergeRequest{IID: mergeRequest}}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	mockBranches := &mocks.MockBranchesService{
+		GetBranchFunc: func(pid interface{}, branch string, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
+			if branch == "release_2024-01-01_deleted" {
+				return nil, mocks.NewMockResponse404(), errors.New("branch not found")
+			}
+			return &gitlab.Branch{Name: branch}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer.ProcessAutoReleaseBranches()
+
+	// Should retarget the orphaned MR
+	if len(mockMRs.UpdateMergeRequestCalls) != 1 {
+		t.Fatalf("expected 1 UpdateMergeRequest call, got %d", len(mockMRs.UpdateMergeRequestCalls))
+	}
+
+	updateCall := mockMRs.UpdateMergeRequestCalls[0]
+	if updateCall.MergeRequest != 20 {
+		t.Errorf("expected orphaned MR !20 to be retargeted, got !%d", updateCall.MergeRequest)
+	}
+	if *updateCall.Opt.TargetBranch != "develop" {
+		t.Errorf("expected target branch 'develop', got %s", *updateCall.Opt.TargetBranch)
 	}
 }

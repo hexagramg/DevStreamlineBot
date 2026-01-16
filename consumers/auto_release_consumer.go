@@ -62,6 +62,8 @@ func (c *AutoReleaseConsumer) processRepoReleaseBranch(config models.AutoRelease
 		return
 	}
 
+	c.retargetOrphanedMRs(repo.GitlabID, config.DevBranchName, releaseLabel.LabelName)
+
 	openReleaseMR := c.findOpenReleaseMR(repo.GitlabID, releaseLabel.LabelName)
 
 	var currentReleaseBranch string
@@ -402,4 +404,68 @@ func hasAnyLabel(labels gitlab.Labels, targets map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+func (c *AutoReleaseConsumer) branchExists(projectID int, branchName string) bool {
+	_, resp, err := c.brService.GetBranch(projectID, branchName)
+	if err != nil {
+		if resp != nil && resp.StatusCode == 404 {
+			return false
+		}
+		log.Printf("Error checking branch %s existence in project %d: %v", branchName, projectID, err)
+		return true
+	}
+	return true
+}
+
+func (c *AutoReleaseConsumer) retargetOrphanedMRs(projectID int, devBranch string, releaseLabel string) {
+	branchExistsCache := make(map[string]bool)
+
+	opts := &gitlab.ListProjectMergeRequestsOptions{
+		State:       gitlab.Ptr("opened"),
+		ListOptions: gitlab.ListOptions{PerPage: 100, Page: 1},
+	}
+
+	for {
+		mrs, resp, err := c.mrService.ListProjectMergeRequests(projectID, opts)
+		if err != nil {
+			log.Printf("Error listing MRs for orphan check in project %d: %v", projectID, err)
+			return
+		}
+
+		for _, mr := range mrs {
+			if hasLabel(mr.Labels, releaseLabel) {
+				continue
+			}
+
+			if mr.TargetBranch == devBranch {
+				continue
+			}
+
+			exists, cached := branchExistsCache[mr.TargetBranch]
+			if !cached {
+				exists = c.branchExists(projectID, mr.TargetBranch)
+				branchExistsCache[mr.TargetBranch] = exists
+			}
+
+			if exists {
+				continue
+			}
+
+			_, _, err := c.mrService.UpdateMergeRequest(projectID, mr.IID,
+				&gitlab.UpdateMergeRequestOptions{
+					TargetBranch: gitlab.Ptr(devBranch),
+				})
+			if err != nil {
+				log.Printf("Failed to retarget orphaned MR !%d to %s: %v", mr.IID, devBranch, err)
+				continue
+			}
+			log.Printf("Retargeted orphaned MR !%d from deleted branch %s to %s", mr.IID, mr.TargetBranch, devBranch)
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
 }
