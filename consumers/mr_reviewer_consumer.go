@@ -686,7 +686,7 @@ func (c *MRReviewerConsumer) ProcessFullyApprovedNotifications() {
 				continue
 			}
 			c.notifyUserDM(rm.User.Email, fmt.Sprintf(
-				"✅ MR ready for release [%s]:\n%s\n%s\nAll reviewers approved",
+				"MR ready for release [%s]:\n%s\n%s",
 				mr.Repository.Name,
 				mr.Title,
 				mr.WebURL,
