@@ -531,6 +531,11 @@ func (c *MRReviewerConsumer) AssignReviewers() {
 			continue
 		}
 
+		// Initialize LastNotifiedState so state change notifications work correctly
+		if mr.LastNotifiedState == "" {
+			c.db.Model(&mr).Update("last_notified_state", "on_review")
+		}
+
 		var subs []models.RepositorySubscription
 		if err := c.db.Preload("Chat").Where("repository_id = ?", mr.RepositoryID).Find(&subs).Error; err != nil {
 			log.Printf("failed to fetch subscriptions: %v", err)
@@ -693,6 +698,8 @@ func (c *MRReviewerConsumer) ProcessFullyApprovedNotifications() {
 }
 
 func (c *MRReviewerConsumer) ProcessStateChangeNotifications() {
+	recentCutoff := time.Now().Add(-30 * time.Minute)
+
 	var actions []models.MRAction
 	err := c.db.
 		Preload("MergeRequest").
@@ -700,10 +707,10 @@ func (c *MRReviewerConsumer) ProcessStateChangeNotifications() {
 		Preload("MergeRequest.Reviewers").
 		Preload("MergeRequest.Approvers").
 		Preload("MergeRequest.Repository").
-		Where("notified = ? AND action_type IN ?", false, []models.MRActionType{
+		Where("notified = ? AND action_type IN ? AND timestamp > ?", false, []models.MRActionType{
 			models.ActionCommentAdded,
 			models.ActionCommentResolved,
-		}).
+		}, recentCutoff).
 		Order("timestamp ASC").
 		Limit(100).
 		Find(&actions).Error
@@ -773,5 +780,19 @@ func (c *MRReviewerConsumer) ProcessStateChangeNotifications() {
 func (c *MRReviewerConsumer) markActionNotified(actionID uint) {
 	if err := c.db.Model(&models.MRAction{}).Where("id = ?", actionID).Update("notified", true).Error; err != nil {
 		log.Printf("failed to mark action %d as notified: %v", actionID, err)
+	}
+}
+
+// CleanupOldUnnotifiedActions marks old unprocessed actions as notified to prevent
+// them from being processed and potentially causing spam notifications.
+func (c *MRReviewerConsumer) CleanupOldUnnotifiedActions() {
+	oldCutoff := time.Now().Add(-1 * time.Hour)
+	result := c.db.Model(&models.MRAction{}).
+		Where("notified = ? AND timestamp < ?", false, oldCutoff).
+		Update("notified", true)
+	if result.Error != nil {
+		log.Printf("failed to cleanup old unnotified actions: %v", result.Error)
+	} else if result.RowsAffected > 0 {
+		log.Printf("cleaned up %d old unnotified actions", result.RowsAffected)
 	}
 }

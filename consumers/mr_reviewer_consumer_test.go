@@ -762,6 +762,9 @@ func TestStateChange_OnReviewToOnFixes(t *testing.T) {
 	mr := mrFactory.Create(repo, author)
 	testutils.AssignReviewers(db, &mr, reviewer)
 
+	// Set initial state to on_review (simulating previous notification)
+	db.Model(&mr).Update("last_notified_state", "on_review")
+
 	// Create unresolved resolvable comment (triggers on_fixes state)
 	comment := testutils.CreateMRComment(db, mr, reviewer, 123, testutils.WithResolvable())
 
@@ -1006,6 +1009,7 @@ func TestBatchProcessing_MultipleMRs(t *testing.T) {
 	// MR1: on_review -> on_fixes (notify author1)
 	mr1 := mrFactory.Create(repo, author1)
 	testutils.AssignReviewers(db, &mr1, reviewer)
+	db.Model(&mr1).Update("last_notified_state", "on_review")
 	comment1 := testutils.CreateMRComment(db, mr1, reviewer, 101, testutils.WithResolvable())
 	testutils.CreateMRAction(db, mr1, models.ActionCommentAdded,
 		testutils.WithActor(reviewer),
@@ -1015,6 +1019,7 @@ func TestBatchProcessing_MultipleMRs(t *testing.T) {
 	// MR2: on_review -> on_fixes (notify author2)
 	mr2 := mrFactory.Create(repo, author2)
 	testutils.AssignReviewers(db, &mr2, reviewer)
+	db.Model(&mr2).Update("last_notified_state", "on_review")
 	comment2 := testutils.CreateMRComment(db, mr2, reviewer, 102, testutils.WithResolvable())
 	testutils.CreateMRAction(db, mr2, models.ActionCommentAdded,
 		testutils.WithActor(reviewer),
@@ -1614,5 +1619,190 @@ func TestStateChange_AllReviewersApproved_NoReReviewNotification(t *testing.T) {
 	sentMessages := mockBot.GetSentMessages()
 	if len(sentMessages) != 0 {
 		t.Fatalf("Expected 0 messages (all reviewers approved), got %d", len(sentMessages))
+	}
+}
+
+// ============================================================================
+// Spam Prevention Edge Case Tests
+// ============================================================================
+
+// TestOldActions_NotProcessed verifies that actions older than 30 minutes are ignored.
+func TestOldActions_NotProcessed(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer := userFactory.Create(testutils.WithEmail("reviewer@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+	db.Model(&mr).Update("last_notified_state", "on_review")
+
+	// Create unresolved comment
+	comment := testutils.CreateMRComment(db, mr, reviewer, 123, testutils.WithResolvable())
+
+	// Create action with old timestamp (1 hour ago)
+	oldTimestamp := time.Now().Add(-1 * time.Hour)
+	action := testutils.CreateMRAction(db, mr, models.ActionCommentAdded,
+		testutils.WithActor(reviewer),
+		testutils.WithCommentID(comment.ID),
+		testutils.WithTimestamp(oldTimestamp),
+	)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
+	consumer.ProcessStateChangeNotifications()
+
+	// Verify: NO notification sent (action too old)
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Fatalf("Expected 0 messages (old action filtered), got %d", len(sentMessages))
+	}
+
+	// Verify: Action is still notified=false (not touched by filter)
+	var updatedAction models.MRAction
+	db.First(&updatedAction, action.ID)
+	if updatedAction.Notified {
+		t.Error("Expected old action to remain notified=false (filtered out)")
+	}
+}
+
+// TestCleanupOldUnnotifiedActions verifies the cleanup function marks old actions as notified.
+func TestCleanupOldUnnotifiedActions(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewer := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+
+	// Create old action (2 hours ago)
+	oldAction := testutils.CreateMRAction(db, mr, models.ActionCommentAdded,
+		testutils.WithActor(reviewer),
+		testutils.WithTimestamp(time.Now().Add(-2*time.Hour)),
+	)
+
+	// Create recent action (10 minutes ago)
+	recentAction := testutils.CreateMRAction(db, mr, models.ActionCommentAdded,
+		testutils.WithActor(reviewer),
+		testutils.WithTimestamp(time.Now().Add(-10*time.Minute)),
+	)
+
+	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)
+	consumer.CleanupOldUnnotifiedActions()
+
+	// Verify: Old action is now notified=true
+	var updatedOldAction models.MRAction
+	db.First(&updatedOldAction, oldAction.ID)
+	if !updatedOldAction.Notified {
+		t.Error("Expected old action (2h) to be marked as notified by cleanup")
+	}
+
+	// Verify: Recent action is still notified=false
+	var updatedRecentAction models.MRAction
+	db.First(&updatedRecentAction, recentAction.ID)
+	if updatedRecentAction.Notified {
+		t.Error("Expected recent action (10m) to remain notified=false")
+	}
+}
+
+// TestMultipleStateTransitions_OnlyCurrentStateNotified verifies that rapid state
+// transitions only notify for the current state, not intermediate states.
+func TestMultipleStateTransitions_OnlyCurrentStateNotified(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer := userFactory.Create(testutils.WithEmail("reviewer@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+	db.Model(&mr).Update("last_notified_state", "on_review")
+
+	// Create comment that was added then resolved (rapid transition)
+	comment := testutils.CreateMRComment(db, mr, reviewer, 123,
+		testutils.WithResolvable(),
+		testutils.WithResolved(&author),
+	)
+
+	// Create both actions (comment added, then resolved)
+	testutils.CreateMRAction(db, mr, models.ActionCommentAdded,
+		testutils.WithActor(reviewer),
+		testutils.WithCommentID(comment.ID),
+	)
+	testutils.CreateMRAction(db, mr, models.ActionCommentResolved,
+		testutils.WithActor(author),
+		testutils.WithCommentID(comment.ID),
+	)
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
+	consumer.ProcessStateChangeNotifications()
+
+	// Current state is on_review (comment resolved), same as LastNotifiedState
+	// So NO notification should be sent
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Fatalf("Expected 0 messages (state unchanged: on_review -> on_review), got %d", len(sentMessages))
+	}
+}
+
+// TestNoSpam_SameStateDifferentActions verifies that multiple actions in the same
+// resulting state only cause ONE notification.
+func TestNoSpam_SameStateDifferentActions(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+	userFactory := testutils.NewUserFactory(db)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create(testutils.WithEmail("author@example.com"))
+	reviewer := userFactory.Create(testutils.WithEmail("reviewer@example.com"))
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+	db.Model(&mr).Update("last_notified_state", "on_review")
+
+	// Create 5 unresolved comments (all cause on_fixes state)
+	var actions []models.MRAction
+	for i := 0; i < 5; i++ {
+		comment := testutils.CreateMRComment(db, mr, reviewer, 100+i, testutils.WithResolvable())
+		action := testutils.CreateMRAction(db, mr, models.ActionCommentAdded,
+			testutils.WithActor(reviewer),
+			testutils.WithCommentID(comment.ID),
+		)
+		actions = append(actions, action)
+	}
+
+	consumer := NewMRReviewerConsumerWithBot(db, mockBot, nil, 0, nil)
+	consumer.ProcessStateChangeNotifications()
+
+	// Verify: Only 1 message sent (state change on_review -> on_fixes)
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 1 {
+		t.Fatalf("Expected 1 message (single state change), got %d", len(sentMessages))
+	}
+	if sentMessages[0].ChatID != "author@example.com" {
+		t.Errorf("Expected message to author, got %s", sentMessages[0].ChatID)
+	}
+
+	// Verify: All 5 actions marked as notified
+	for _, action := range actions {
+		var updatedAction models.MRAction
+		db.First(&updatedAction, action.ID)
+		if !updatedAction.Notified {
+			t.Errorf("Expected action %d to be marked as notified", action.ID)
+		}
 	}
 }

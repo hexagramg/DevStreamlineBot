@@ -148,6 +148,7 @@ func main() {
 			mrReviewerConsumer.ProcessStateChangeNotifications()
 			mrReviewerConsumer.ProcessReviewerRemovalNotifications()
 			mrReviewerConsumer.ProcessFullyApprovedNotifications()
+			mrReviewerConsumer.CleanupOldUnnotifiedActions()
 			autoReleaseConsumer.ProcessAutoReleaseBranches()
 			autoReleaseConsumer.ProcessReleaseMRDescriptions()
 		}
