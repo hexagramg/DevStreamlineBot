@@ -20,6 +20,8 @@ const (
 
 // DeriveState determines the current state of a merge request based on DB data.
 // Priority order: merged > closed > draft > on_fixes > on_review
+// Note: on_fixes only applies when there are unresolved threads where the last
+// comment is NOT from the MR author (i.e., author hasn't responded yet).
 func DeriveState(db *gorm.DB, mr *models.MergeRequest) MRState {
 	if mr.State == "merged" {
 		return StateMerged
@@ -32,7 +34,7 @@ func DeriveState(db *gorm.DB, mr *models.MergeRequest) MRState {
 		return StateDraft
 	}
 
-	if HasUnresolvedComments(db, mr.ID) {
+	if HasThreadsAwaitingAuthor(db, mr.ID, mr.AuthorID) {
 		return StateOnFixes
 	}
 
@@ -159,12 +161,14 @@ func GetStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, state MRState)
 		return mr.GitlabCreatedAt
 
 	case StateOnFixes:
-		var firstUnresolvedComment models.MRComment
-		err := db.Where("merge_request_id = ? AND resolvable = ? AND resolved = ?", mr.ID, true, false).
+		var earliestAwaitingComment models.MRComment
+		err := db.Where(`merge_request_id = ? AND is_last_in_thread = ? AND thread_starter_id IS NOT NULL AND author_id != ?
+			AND EXISTS (SELECT 1 FROM mr_comments starter WHERE starter.gitlab_discussion_id = mr_comments.gitlab_discussion_id AND starter.resolvable = ? AND starter.resolved = ?)`,
+			mr.ID, true, mr.AuthorID, true, false).
 			Order("gitlab_created_at ASC").
-			First(&firstUnresolvedComment).Error
+			First(&earliestAwaitingComment).Error
 		if err == nil {
-			return &firstUnresolvedComment.GitlabCreatedAt
+			return &earliestAwaitingComment.GitlabCreatedAt
 		}
 		return nil
 
@@ -242,6 +246,31 @@ func HasUnresolvedComments(db *gorm.DB, mrID uint) bool {
 		Where("merge_request_id = ? AND resolvable = ? AND resolved = ?", mrID, true, false).
 		Count(&count)
 	return count > 0
+}
+
+// HasThreadsAwaitingAuthor returns true if MR has any unresolved threads
+// where the last comment is NOT from the MR author.
+// A thread where the author commented last is considered "handled" (awaiting reviewer action).
+func HasThreadsAwaitingAuthor(db *gorm.DB, mrID uint, mrAuthorID uint) bool {
+	var count int64
+	db.Model(&models.MRComment{}).
+		Where(`merge_request_id = ? AND is_last_in_thread = ? AND thread_starter_id IS NOT NULL AND author_id != ?
+			AND EXISTS (SELECT 1 FROM mr_comments starter WHERE starter.gitlab_discussion_id = mr_comments.gitlab_discussion_id AND starter.resolvable = ? AND starter.resolved = ?)`,
+			mrID, true, mrAuthorID, true, false).
+		Count(&count)
+	return count > 0
+}
+
+// CountThreadsAwaitingAuthor returns count of unresolved threads where the last
+// comment is NOT from the MR author.
+func CountThreadsAwaitingAuthor(db *gorm.DB, mrID uint, mrAuthorID uint) int64 {
+	var count int64
+	db.Model(&models.MRComment{}).
+		Where(`merge_request_id = ? AND is_last_in_thread = ? AND thread_starter_id IS NOT NULL AND author_id != ?
+			AND EXISTS (SELECT 1 FROM mr_comments starter WHERE starter.gitlab_discussion_id = mr_comments.gitlab_discussion_id AND starter.resolvable = ? AND starter.resolved = ?)`,
+			mrID, true, mrAuthorID, true, false).
+		Count(&count)
+	return count
 }
 
 func GetUnresolvedComments(db *gorm.DB, mrID uint) []models.MRComment {

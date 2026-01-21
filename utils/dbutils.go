@@ -199,9 +199,12 @@ func hasReleaseLabelFromCache(labels []models.Label, releaseLabels map[string]st
 
 // FindUserActionMRs returns MRs requiring action from a specific user.
 // Returns three slices:
-// - reviewMRs: MRs where user is reviewer and state is on_review
+// - reviewMRs: MRs where user is reviewer and needs to take action (no pending threads awaiting author)
 // - fixesMRs: MRs where user is author and state is on_fixes or draft
 // - authorOnReviewMRs: MRs where user is author and state is on_review (waiting for reviewers)
+//
+// Reviewer needs action when ALL their threads are "handled" - meaning they have NO
+// unresolved threads where they commented last (waiting for author to respond).
 func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs []DigestMR, authorOnReviewMRs []DigestMR, err error) {
 	var reviewerMRs []models.MergeRequest
 	err = db.
@@ -215,10 +218,11 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		Where(`NOT EXISTS (
 			SELECT 1 FROM mr_comments mc
 			WHERE mc.merge_request_id = merge_requests.id
-			  AND mc.author_id = ?
-			  AND mc.resolvable = ?
-			  AND mc.resolved = ?
-		)`, userID, true, false).
+			  AND mc.thread_starter_id = ?
+			  AND mc.is_last_in_thread = ?
+			  AND mc.author_id != merge_requests.author_id
+			  AND EXISTS (SELECT 1 FROM mr_comments starter WHERE starter.gitlab_discussion_id = mc.gitlab_discussion_id AND starter.resolvable = ? AND starter.resolved = ?)
+		)`, userID, true, true, false).
 		Find(&reviewerMRs).Error
 	if err != nil {
 		return nil, nil, nil, err
@@ -303,11 +307,28 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 }
 
 // GetActiveReviewers returns active reviewers for each MR.
-// A reviewer is active if they: are assigned, haven't approved, and have no unresolved resolvable comments they authored.
+// A reviewer is active if they: are assigned, haven't approved, and have no unresolved threads
+// where they are the last commenter (waiting for author to respond).
 func GetActiveReviewers(db *gorm.DB, mrIDs []uint) (map[uint][]models.User, error) {
 	result := make(map[uint][]models.User)
 	if len(mrIDs) == 0 {
 		return result, nil
+	}
+
+	type MRAuthorRow struct {
+		ID       uint `gorm:"column:id"`
+		AuthorID uint `gorm:"column:author_id"`
+	}
+	var mrAuthors []MRAuthorRow
+	if err := db.Table("merge_requests").
+		Select("id, author_id").
+		Where("id IN ?", mrIDs).
+		Scan(&mrAuthors).Error; err != nil {
+		return nil, err
+	}
+	mrAuthorMap := make(map[uint]uint)
+	for _, row := range mrAuthors {
+		mrAuthorMap[row.ID] = row.AuthorID
 	}
 
 	type ReviewerRow struct {
@@ -337,24 +358,30 @@ func GetActiveReviewers(db *gorm.DB, mrIDs []uint) (map[uint][]models.User, erro
 		approverSet[row.MergeRequestID][row.UserID] = true
 	}
 
-	type CommentAuthorRow struct {
-		MergeRequestID uint `gorm:"column:merge_request_id"`
-		AuthorID       uint `gorm:"column:author_id"`
+	type ThreadRow struct {
+		MergeRequestID  uint `gorm:"column:merge_request_id"`
+		ThreadStarterID uint `gorm:"column:thread_starter_id"`
+		AuthorID        uint `gorm:"column:author_id"`
 	}
-	var commentAuthors []CommentAuthorRow
+	var threadRows []ThreadRow
 	if err := db.Table("mr_comments").
-		Select("DISTINCT merge_request_id, author_id").
-		Where("merge_request_id IN ? AND resolvable = ? AND resolved = ?", mrIDs, true, false).
-		Scan(&commentAuthors).Error; err != nil {
+		Select("merge_request_id, thread_starter_id, author_id").
+		Where(`merge_request_id IN ? AND is_last_in_thread = ? AND thread_starter_id IS NOT NULL
+			AND EXISTS (SELECT 1 FROM mr_comments starter WHERE starter.gitlab_discussion_id = mr_comments.gitlab_discussion_id AND starter.resolvable = ? AND starter.resolved = ?)`,
+			mrIDs, true, true, false).
+		Scan(&threadRows).Error; err != nil {
 		return nil, err
 	}
 
-	hasUnresolvedComment := make(map[uint]map[uint]bool)
-	for _, row := range commentAuthors {
-		if hasUnresolvedComment[row.MergeRequestID] == nil {
-			hasUnresolvedComment[row.MergeRequestID] = make(map[uint]bool)
+	hasThreadAwaitingAuthor := make(map[uint]map[uint]bool)
+	for _, row := range threadRows {
+		mrAuthorID := mrAuthorMap[row.MergeRequestID]
+		if row.AuthorID != mrAuthorID {
+			if hasThreadAwaitingAuthor[row.MergeRequestID] == nil {
+				hasThreadAwaitingAuthor[row.MergeRequestID] = make(map[uint]bool)
+			}
+			hasThreadAwaitingAuthor[row.MergeRequestID][row.ThreadStarterID] = true
 		}
-		hasUnresolvedComment[row.MergeRequestID][row.AuthorID] = true
 	}
 
 	activeReviewerIDs := make(map[uint][]uint)
@@ -363,7 +390,7 @@ func GetActiveReviewers(db *gorm.DB, mrIDs []uint) (map[uint][]models.User, erro
 		if approverSet[row.MergeRequestID][row.UserID] {
 			continue
 		}
-		if hasUnresolvedComment[row.MergeRequestID][row.UserID] {
+		if hasThreadAwaitingAuthor[row.MergeRequestID][row.UserID] {
 			continue
 		}
 		activeReviewerIDs[row.MergeRequestID] = append(activeReviewerIDs[row.MergeRequestID], row.UserID)

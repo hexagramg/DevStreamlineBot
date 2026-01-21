@@ -426,7 +426,10 @@ func TestFindUserActionMRs_ExcludesReleaseLabeledAuthorMR(t *testing.T) {
 	// MR authored by user with release label and unresolved comment (on_fixes state)
 	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "release"))
 	testutils.AssignReviewers(db, &mr, reviewer)
-	testutils.CreateMRComment(db, mr, reviewer, 1, testutils.WithResolvable())
+	testutils.CreateMRComment(db, mr, reviewer, 1,
+		testutils.WithResolvable(),
+		testutils.WithThreadStarter(&reviewer),
+		testutils.WithIsLastInThread())
 
 	// Configure release label
 	testutils.CreateReleaseLabel(db, repo, "release")
@@ -528,6 +531,10 @@ func TestFindReleaseManagerActionMRs_IncludesNormalApprovedMR(t *testing.T) {
 
 // --- Per-User Action Tracking Tests ---
 
+// TestFindUserActionMRs_ReviewerWithUnresolvedCommentsExcluded tests the critical bug scenario:
+// Multi-comment thread where reviewer follows up. In GitLab, only thread starter has Resolvable=true.
+// OLD query (resolvable=true AND is_last_in_thread=true): 0 matches → reviewer WOULD need action (BUG!)
+// NEW query (EXISTS subquery): finds starter with resolvable=true → reviewer excluded (CORRECT!)
 func TestFindUserActionMRs_ReviewerWithUnresolvedCommentsExcluded(t *testing.T) {
 	db := testutils.SetupTestDB(t)
 	repoFactory := testutils.NewRepositoryFactory(db)
@@ -542,17 +549,29 @@ func TestFindUserActionMRs_ReviewerWithUnresolvedCommentsExcluded(t *testing.T) 
 	mr := mrFactory.Create(repo, author)
 	testutils.AssignReviewers(db, &mr, reviewer)
 
-	// Reviewer creates an unresolved resolvable comment (waiting for author)
-	testutils.CreateMRComment(db, mr, reviewer, 1, testutils.WithResolvable())
+	discussionID := "disc-multi-unresolved"
 
-	// Reviewer should NOT appear in reviewMRs because they have unresolved comments
+	// Reviewer starts a thread (only thread starter has Resolvable=true)
+	testutils.CreateMRComment(db, mr, reviewer, 1,
+		testutils.WithResolvable(),
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewer))
+	// Note: No WithIsLastInThread() - defaults to false (not last since there's a reply)
+
+	// Reviewer adds follow-up reply (reply has Resolvable=false in GitLab)
+	testutils.CreateMRComment(db, mr, reviewer, 2,
+		testutils.WithDiscussionID(discussionID), // Same thread!
+		testutils.WithThreadStarter(&reviewer),
+		testutils.WithIsLastInThread())
+
+	// Reviewer should NOT appear in reviewMRs because they have unresolved thread awaiting author
 	reviewMRs, _, _, err := FindUserActionMRs(db, reviewer.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if len(reviewMRs) != 0 {
-		t.Errorf("expected 0 review MRs (reviewer has unresolved comments), got %d", len(reviewMRs))
+		t.Errorf("expected 0 review MRs (multi-comment thread awaiting author), got %d", len(reviewMRs))
 	}
 }
 
@@ -653,7 +672,10 @@ func TestFindUserActionMRs_MultipleReviewersIndependent(t *testing.T) {
 	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2)
 
 	// Reviewer1 creates an unresolved comment
-	testutils.CreateMRComment(db, mr, reviewer1, 1, testutils.WithResolvable())
+	testutils.CreateMRComment(db, mr, reviewer1, 1,
+		testutils.WithResolvable(),
+		testutils.WithThreadStarter(&reviewer1),
+		testutils.WithIsLastInThread())
 
 	// Reviewer1 should NOT see the MR (has unresolved comment)
 	reviewMRs1, _, _, err := FindUserActionMRs(db, reviewer1.ID)
@@ -690,7 +712,10 @@ func TestFindUserActionMRs_ReviewerSeesOnFixesMR(t *testing.T) {
 	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2)
 
 	// Reviewer1 creates an unresolved comment (MR is now in on_fixes state globally)
-	testutils.CreateMRComment(db, mr, reviewer1, 1, testutils.WithResolvable())
+	testutils.CreateMRComment(db, mr, reviewer1, 1,
+		testutils.WithResolvable(),
+		testutils.WithThreadStarter(&reviewer1),
+		testutils.WithIsLastInThread())
 
 	// Reviewer2 should still see the MR even though global state is on_fixes
 	// because they personally have no unresolved comments
@@ -717,7 +742,10 @@ func TestFindUserActionMRs_AuthorSeesFixesMR(t *testing.T) {
 	// Create MR with reviewer and unresolved comment
 	mr := mrFactory.Create(repo, author)
 	testutils.AssignReviewers(db, &mr, reviewer)
-	testutils.CreateMRComment(db, mr, reviewer, 1, testutils.WithResolvable())
+	testutils.CreateMRComment(db, mr, reviewer, 1,
+		testutils.WithResolvable(),
+		testutils.WithThreadStarter(&reviewer),
+		testutils.WithIsLastInThread())
 
 	// Author should see MR in fixes
 	_, fixesMRs, _, err := FindUserActionMRs(db, author.ID)
@@ -750,7 +778,10 @@ func TestFindUserActionMRs_ReviewerReReviewCycle(t *testing.T) {
 	}
 
 	// Step 2: Reviewer creates unresolved comment - no longer needs action
-	comment := testutils.CreateMRComment(db, mr, reviewer, 1, testutils.WithResolvable())
+	comment := testutils.CreateMRComment(db, mr, reviewer, 1,
+		testutils.WithResolvable(),
+		testutils.WithThreadStarter(&reviewer),
+		testutils.WithIsLastInThread())
 	reviewMRs, _, _, _ = FindUserActionMRs(db, reviewer.ID)
 	if len(reviewMRs) != 0 {
 		t.Errorf("Step 2: expected 0 review MRs (waiting for author), got %d", len(reviewMRs))
@@ -767,7 +798,10 @@ func TestFindUserActionMRs_ReviewerReReviewCycle(t *testing.T) {
 	}
 
 	// Step 4: Reviewer creates another unresolved comment - no longer needs action
-	testutils.CreateMRComment(db, mr, reviewer, 2, testutils.WithResolvable())
+	testutils.CreateMRComment(db, mr, reviewer, 2,
+		testutils.WithResolvable(),
+		testutils.WithThreadStarter(&reviewer),
+		testutils.WithIsLastInThread())
 	reviewMRs, _, _, _ = FindUserActionMRs(db, reviewer.ID)
 	if len(reviewMRs) != 0 {
 		t.Errorf("Step 4: expected 0 review MRs (new thread, waiting for author), got %d", len(reviewMRs))
@@ -792,7 +826,10 @@ func TestFindDigestMergeRequestsWithState_UsesGlobalState(t *testing.T) {
 	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2)
 
 	// Reviewer1 creates an unresolved comment (global state = on_fixes)
-	testutils.CreateMRComment(db, mr, reviewer1, 1, testutils.WithResolvable())
+	testutils.CreateMRComment(db, mr, reviewer1, 1,
+		testutils.WithResolvable(),
+		testutils.WithThreadStarter(&reviewer1),
+		testutils.WithIsLastInThread())
 
 	// Global digest should show MR as on_fixes regardless of which reviewer's perspective
 	results, err := FindDigestMergeRequestsWithState(db, []uint{repo.ID})
@@ -866,6 +903,10 @@ func TestGetActiveReviewers_SomeApproved(t *testing.T) {
 	}
 }
 
+// TestGetActiveReviewers_WithUnresolvedComments tests the critical bug scenario:
+// Multi-comment thread where reviewer follows up. In GitLab, only thread starter has Resolvable=true.
+// OLD query (resolvable=true AND is_last_in_thread=true): 0 matches → reviewer WOULD be active (BUG!)
+// NEW query (EXISTS subquery): finds starter with resolvable=true → reviewer excluded (CORRECT!)
 func TestGetActiveReviewers_WithUnresolvedComments(t *testing.T) {
 	db := testutils.SetupTestDB(t)
 	repoFactory := testutils.NewRepositoryFactory(db)
@@ -880,8 +921,20 @@ func TestGetActiveReviewers_WithUnresolvedComments(t *testing.T) {
 	mr := mrFactory.Create(repo, author)
 	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2)
 
-	// Reviewer1 has unresolved comment - should be excluded from active
-	testutils.CreateMRComment(db, mr, reviewer1, 1, testutils.WithResolvable())
+	discussionID := "disc-active-reviewers"
+
+	// Reviewer1 starts a thread (only thread starter has Resolvable=true)
+	testutils.CreateMRComment(db, mr, reviewer1, 1,
+		testutils.WithResolvable(),
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewer1))
+	// Note: No WithIsLastInThread() - defaults to false (not last since there's a reply)
+
+	// Reviewer1 adds follow-up reply (reply has Resolvable=false in GitLab)
+	testutils.CreateMRComment(db, mr, reviewer1, 2,
+		testutils.WithDiscussionID(discussionID), // Same thread!
+		testutils.WithThreadStarter(&reviewer1),
+		testutils.WithIsLastInThread())
 
 	result, err := GetActiveReviewers(db, []uint{mr.ID})
 	if err != nil {
@@ -912,7 +965,10 @@ func TestGetActiveReviewers_MixedConditions(t *testing.T) {
 	mr := mrFactory.Create(repo, author)
 	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2, reviewer3)
 	testutils.AssignApprovers(db, &mr, reviewer1)
-	testutils.CreateMRComment(db, mr, reviewer2, 1, testutils.WithResolvable())
+	testutils.CreateMRComment(db, mr, reviewer2, 1,
+		testutils.WithResolvable(),
+		testutils.WithThreadStarter(&reviewer2),
+		testutils.WithIsLastInThread())
 
 	result, err := GetActiveReviewers(db, []uint{mr.ID})
 	if err != nil {
@@ -986,7 +1042,10 @@ func TestGetActiveReviewers_MultipleMRs(t *testing.T) {
 	// MR1: reviewer1 approved
 	testutils.AssignApprovers(db, &mr1, reviewer1)
 	// MR2: reviewer2 has unresolved comment
-	testutils.CreateMRComment(db, mr2, reviewer2, 1, testutils.WithResolvable())
+	testutils.CreateMRComment(db, mr2, reviewer2, 1,
+		testutils.WithResolvable(),
+		testutils.WithThreadStarter(&reviewer2),
+		testutils.WithIsLastInThread())
 
 	result, err := GetActiveReviewers(db, []uint{mr1.ID, mr2.ID})
 	if err != nil {
@@ -1061,5 +1120,85 @@ func TestGetActiveReviewers_NonResolvableCommentDoesNotExclude(t *testing.T) {
 	activeReviewers := result[mr.ID]
 	if len(activeReviewers) != 1 {
 		t.Errorf("expected 1 active reviewer (non-resolvable comment doesn't exclude), got %d", len(activeReviewers))
+	}
+}
+
+func TestFindUserActionMRs_ReviewerNeedsActionAfterAuthorReply(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewer := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+
+	discussionID := "disc-test-1"
+
+	// Reviewer starts a thread (only thread starter has Resolvable=true)
+	testutils.CreateMRComment(db, mr, reviewer, 1,
+		testutils.WithResolvable(),
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewer))
+
+	// Author replies (becomes last in thread, replies have Resolvable=false)
+	testutils.CreateMRComment(db, mr, author, 2,
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewer),
+		testutils.WithIsLastInThread())
+
+	// Reviewer should now need action (author replied to their thread)
+	reviewMRs, _, _, err := FindUserActionMRs(db, reviewer.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(reviewMRs) != 1 {
+		t.Errorf("expected 1 review MR (author replied, reviewer needs to re-review), got %d", len(reviewMRs))
+	}
+}
+
+func TestGetActiveReviewers_AfterAuthorReply(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewer := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+
+	discussionID := "disc-test-2"
+
+	// Reviewer starts a thread (only thread starter has Resolvable=true)
+	testutils.CreateMRComment(db, mr, reviewer, 1,
+		testutils.WithResolvable(),
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewer))
+
+	// Author replies (becomes last in thread, replies have Resolvable=false)
+	testutils.CreateMRComment(db, mr, author, 2,
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewer),
+		testutils.WithIsLastInThread())
+
+	// Reviewer should be active (author replied, waiting for reviewer to re-review)
+	result, err := GetActiveReviewers(db, []uint{mr.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	activeReviewers := result[mr.ID]
+	if len(activeReviewers) != 1 {
+		t.Errorf("expected 1 active reviewer (author replied), got %d", len(activeReviewers))
+	}
+	if len(activeReviewers) == 1 && activeReviewers[0].ID != reviewer.ID {
+		t.Errorf("expected reviewer to be active after author reply, got user ID %d", activeReviewers[0].ID)
 	}
 }

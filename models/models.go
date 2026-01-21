@@ -345,7 +345,7 @@ type MRAction struct {
 	CommentID      *uint        `gorm:"index"` // Reference to MRComment for comment-related actions
 	Comment        *MRComment   `gorm:"constraint:OnDelete:SET NULL;"`
 	Timestamp      time.Time    `gorm:"not null;index"`
-	Metadata       string       `gorm:"type:text"` // JSON for additional context (e.g., draft state)
+	Metadata       string       `gorm:"type:text"`           // JSON for additional context (e.g., draft state)
 	Notified       bool         `gorm:"default:false;index"` // Whether DM notification was sent for this action
 }
 
@@ -353,27 +353,29 @@ type MRComment struct {
 	gorm.Model
 	MergeRequestID     uint         `gorm:"not null;index"`
 	MergeRequest       MergeRequest `gorm:"constraint:OnDelete:CASCADE;"`
-	GitlabNoteID       int          `gorm:"not null;uniqueIndex"` // GitLab note ID
-	GitlabDiscussionID string       `gorm:"index"`                // GitLab discussion ID
+	GitlabNoteID       int          `gorm:"not null;uniqueIndex"`
+	GitlabDiscussionID string       `gorm:"index"`
 	AuthorID           uint         `gorm:"not null"`
 	Author             User         `gorm:"constraint:OnDelete:CASCADE;"`
 	Body               string       `gorm:"type:text"`
 	Resolvable         bool         `gorm:"default:false"`
 	Resolved           bool         `gorm:"default:false"`
 	ResolvedByID       *uint
-	ResolvedBy         *User      `gorm:"constraint:OnDelete:SET NULL;"`
-	ResolvedAt         *time.Time // From GitLab API resolved_at field
-	GitlabCreatedAt    time.Time  `gorm:"not null"`
+	ResolvedBy         *User `gorm:"constraint:OnDelete:SET NULL;"`
+	ResolvedAt         *time.Time
+	GitlabCreatedAt    time.Time `gorm:"not null"`
 	GitlabUpdatedAt    time.Time
+	ThreadStarterID    *uint `gorm:"index"`
+	IsLastInThread     bool  `gorm:"default:false;index"`
 }
 
 // DailyDigestPreference stores user preferences for personal daily digest notifications.
 type DailyDigestPreference struct {
 	gorm.Model
-	VKUserID       uint   `gorm:"uniqueIndex;not null"` // Foreign key to VKUser
-	VKUser         VKUser `gorm:"constraint:OnDelete:CASCADE;"`
-	DMChatID       string `gorm:"not null"`            // Chat ID for sending DM
-	Enabled        bool   `gorm:"default:false"`       // Whether digest is enabled
-	TimezoneOffset int    `gorm:"default:3"`           // Hours from UTC (default +3)
-	LastSentAt     *time.Time                          // Track last send to avoid duplicates
+	VKUserID       uint       `gorm:"uniqueIndex;not null"` // Foreign key to VKUser
+	VKUser         VKUser     `gorm:"constraint:OnDelete:CASCADE;"`
+	DMChatID       string     `gorm:"not null"`      // Chat ID for sending DM
+	Enabled        bool       `gorm:"default:false"` // Whether digest is enabled
+	TimezoneOffset int        `gorm:"default:3"`     // Hours from UTC (default +3)
+	LastSentAt     *time.Time // Track last send to avoid duplicates
 }

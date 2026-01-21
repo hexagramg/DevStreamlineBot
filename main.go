@@ -11,6 +11,7 @@ import (
 	"devstreamlinebot/consumers"
 	"devstreamlinebot/models"
 	"devstreamlinebot/polling"
+	"devstreamlinebot/utils"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/time/rate"
@@ -63,6 +64,10 @@ func main() {
 		&models.AutoReleaseBranchConfig{},
 	); err != nil {
 		log.Fatalf("failed to migrate database schemas: %v", err)
+	}
+
+	if err := utils.BackfillThreadMetadata(db); err != nil {
+		log.Printf("Warning: thread metadata backfill failed: %v", err)
 	}
 
 	limiter := rate.NewLimiter(rate.Limit(5), 10)

@@ -336,16 +336,33 @@ func WithResolved(resolvedBy *models.User) CommentOption {
 	}
 }
 
+func WithThreadStarter(user *models.User) CommentOption {
+	return func(c *models.MRComment) {
+		if user != nil {
+			c.ThreadStarterID = &user.ID
+		}
+	}
+}
+
+func WithIsLastInThread() CommentOption {
+	return func(c *models.MRComment) { c.IsLastInThread = true }
+}
+
+func WithDiscussionID(id string) CommentOption {
+	return func(c *models.MRComment) { c.GitlabDiscussionID = id }
+}
+
 func CreateMRComment(db *gorm.DB, mr models.MergeRequest, author models.User, noteID int, opts ...CommentOption) models.MRComment {
 	comment := models.MRComment{
-		MergeRequestID:  mr.ID,
-		GitlabNoteID:    noteID,
-		AuthorID:        author.ID,
-		Body:            fmt.Sprintf("Comment %d", noteID),
-		Resolvable:      false,
-		Resolved:        false,
-		GitlabCreatedAt: time.Now(),
-		GitlabUpdatedAt: time.Now(),
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       noteID,
+		GitlabDiscussionID: fmt.Sprintf("disc-mr%d-note%d", mr.ID, noteID),
+		AuthorID:           author.ID,
+		Body:               fmt.Sprintf("Comment %d", noteID),
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Now(),
+		GitlabUpdatedAt:    time.Now(),
 	}
 	for _, opt := range opts {
 		opt(&comment)

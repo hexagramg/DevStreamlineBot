@@ -80,21 +80,34 @@ func TestDeriveState_Draft(t *testing.T) {
 func TestDeriveState_OnFixes(t *testing.T) {
 	db := setupTestDB(t)
 
+	// Create reviewer for the comment author
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+
+	// Create MR author
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
 	// Create MR
 	mr := &models.MergeRequest{
-		State: "opened",
-		Draft: false,
+		State:    "opened",
+		Draft:    false,
+		AuthorID: author.ID,
 	}
 	db.Create(mr)
 
-	// Create unresolved resolvable comment
+	// Create unresolved resolvable comment with thread metadata
+	// Reviewer started the thread and is the last commenter (waiting for author)
 	comment := &models.MRComment{
-		MergeRequestID:  mr.ID,
-		GitlabNoteID:    12345,
-		AuthorID:        1,
-		Resolvable:      true,
-		Resolved:        false,
-		GitlabCreatedAt: time.Now(),
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       12345,
+		GitlabDiscussionID: "disc-onfixes-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Now(),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
 	}
 	db.Create(comment)
 
@@ -320,21 +333,33 @@ func TestGetStateTransitionTime_Closed(t *testing.T) {
 func TestGetStateTransitionTime_OnFixes(t *testing.T) {
 	db := setupTestDB(t)
 
+	// Create reviewer for the comment author
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+
+	// Create MR author
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
 	// Create MR
 	mr := &models.MergeRequest{
-		State: "opened",
+		State:    "opened",
+		AuthorID: author.ID,
 	}
 	db.Create(mr)
 
-	// Create unresolved comment
+	// Create unresolved comment with thread metadata
 	commentTime := time.Now().Add(-3 * time.Hour)
 	db.Create(&models.MRComment{
-		MergeRequestID:  mr.ID,
-		GitlabNoteID:    1,
-		AuthorID:        1,
-		Resolvable:      true,
-		Resolved:        false,
-		GitlabCreatedAt: commentTime,
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-transition-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    commentTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
 	})
 
 	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
@@ -624,9 +649,13 @@ func TestGetStateInfo_OnFixesStateWithBlocking(t *testing.T) {
 	repo := &models.Repository{GitlabID: 1, Name: "test-repo"}
 	db.Create(repo)
 
-	// Create user for comment author
-	user := &models.User{GitlabID: 100, Username: "reviewer"}
-	db.Create(user)
+	// Create comment author (reviewer)
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+
+	// Create MR author
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
 
 	// MR with unresolved comments AND block labels
 	baseTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
@@ -634,18 +663,22 @@ func TestGetStateInfo_OnFixesStateWithBlocking(t *testing.T) {
 		State:           "opened",
 		Draft:           false,
 		RepositoryID:    repo.ID,
+		AuthorID:        author.ID,
 		GitlabCreatedAt: &baseTime,
 	}
 	db.Create(mr)
 
-	// Add unresolved comment (puts MR in on_fixes state)
+	// Add unresolved comment with thread metadata (puts MR in on_fixes state)
 	db.Create(&models.MRComment{
-		MergeRequestID:  mr.ID,
-		GitlabNoteID:    1,
-		AuthorID:        user.ID,
-		Resolvable:      true,
-		Resolved:        false,
-		GitlabCreatedAt: baseTime.Add(2 * time.Hour),
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-fixes-blocking-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    baseTime.Add(2 * time.Hour),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
 	})
 
 	// Add block label
@@ -775,9 +808,13 @@ func TestGetStateInfo_BlockDuringStateTransition(t *testing.T) {
 	repo := &models.Repository{GitlabID: 1, Name: "test-repo"}
 	db.Create(repo)
 
-	// Create user for comment author
-	user := &models.User{GitlabID: 100, Username: "reviewer"}
-	db.Create(user)
+	// Create comment author (reviewer)
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+
+	// Create MR author
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
 
 	// MR starts on_review
 	baseTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
@@ -785,6 +822,7 @@ func TestGetStateInfo_BlockDuringStateTransition(t *testing.T) {
 		State:           "opened",
 		Draft:           false,
 		RepositoryID:    repo.ID,
+		AuthorID:        author.ID,
 		GitlabCreatedAt: &baseTime,
 	}
 	db.Create(mr)
@@ -799,12 +837,15 @@ func TestGetStateInfo_BlockDuringStateTransition(t *testing.T) {
 
 	// T+2h: Comment added (state → on_fixes)
 	comment := &models.MRComment{
-		MergeRequestID:  mr.ID,
-		GitlabNoteID:    1,
-		AuthorID:        user.ID,
-		Resolvable:      true,
-		Resolved:        false,
-		GitlabCreatedAt: baseTime.Add(2 * time.Hour),
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-transition-block-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    baseTime.Add(2 * time.Hour),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
 	}
 	db.Create(comment)
 
@@ -812,7 +853,7 @@ func TestGetStateInfo_BlockDuringStateTransition(t *testing.T) {
 	resolvedAt := baseTime.Add(3 * time.Hour)
 	db.Model(comment).Updates(map[string]interface{}{
 		"resolved":       true,
-		"resolved_by_id": user.ID,
+		"resolved_by_id": author.ID,
 		"resolved_at":    resolvedAt,
 	})
 	db.Create(&models.MRAction{
@@ -845,6 +886,218 @@ func TestGetStateInfo_BlockDuringStateTransition(t *testing.T) {
 	// WorkingTime should never be negative
 	if info.WorkingTime < 0 {
 		t.Errorf("GetStateInfo().WorkingTime = %v, should never be negative", info.WorkingTime)
+	}
+}
+
+func TestDeriveState_OnReview_AuthorRepliedToThread(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{
+		State:    "opened",
+		Draft:    false,
+		AuthorID: author.ID,
+	}
+	db.Create(mr)
+
+	discussionID := "disc-123"
+
+	// Reviewer starts a thread (only thread starter has Resolvable=true)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: discussionID,
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Now().Add(-2 * time.Hour),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+
+	// Author replies to the thread (is now last in thread, replies have Resolvable=false)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: discussionID,
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Now().Add(-1 * time.Hour),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	// State should be on_review because author replied (waiting for reviewer to re-review)
+	state := DeriveState(db, mr)
+	if state != StateOnReview {
+		t.Errorf("DeriveState() = %v, want %v (author replied to thread)", state, StateOnReview)
+	}
+}
+
+// TestDeriveState_OnFixes_MultiCommentThread tests the critical bug scenario:
+// A multi-comment thread where the reviewer follows up (not the author).
+// In GitLab, only the thread starter has Resolvable=true, replies have Resolvable=false.
+// OLD query (resolvable=true AND is_last_in_thread=true): 0 matches → on_review (BUG!)
+// NEW query (EXISTS subquery): finds starter with resolvable=true → on_fixes (CORRECT!)
+func TestDeriveState_OnFixes_MultiCommentThread(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{
+		State:    "opened",
+		Draft:    false,
+		AuthorID: author.ID,
+	}
+	db.Create(mr)
+
+	discussionID := "disc-multi-comment"
+
+	// Thread starter: reviewer opens thread
+	// In GitLab, only the thread starter has Resolvable=true
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: discussionID,
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,  // ONLY starter is resolvable
+		Resolved:           false,
+		GitlabCreatedAt:    time.Now().Add(-2 * time.Hour),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false, // NOT last - there's a reply
+	})
+
+	// Reviewer's follow-up comment (still waiting for author)
+	// Replies in GitLab have Resolvable=false
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: discussionID, // Same thread
+		AuthorID:           reviewer.ID,
+		Resolvable:         false, // Reply has Resolvable=false
+		Resolved:           false,
+		GitlabCreatedAt:    time.Now().Add(-1 * time.Hour),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true, // IS last comment in thread
+	})
+
+	// Expected: on_fixes (author hasn't responded to unresolved thread)
+	state := DeriveState(db, mr)
+	if state != StateOnFixes {
+		t.Errorf("DeriveState() = %v, want %v (multi-comment thread awaiting author)", state, StateOnFixes)
+	}
+}
+
+// TestDeriveState_OnFixes_SingleCommentThread tests single-comment threads where
+// the same comment has both Resolvable=true AND IsLastInThread=true.
+// This works with both old and new query logic - it's the simple case.
+func TestDeriveState_OnFixes_SingleCommentThread(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{
+		State:    "opened",
+		Draft:    false,
+		AuthorID: author.ID,
+	}
+	db.Create(mr)
+
+	discussionID := "disc-456"
+
+	// Reviewer starts a thread and is still last (single-comment thread, waiting for author)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: discussionID,
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Now(),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	// State should be on_fixes because reviewer is still last (waiting for author to respond)
+	state := DeriveState(db, mr)
+	if state != StateOnFixes {
+		t.Errorf("DeriveState() = %v, want %v (reviewer last in thread)", state, StateOnFixes)
+	}
+}
+
+func TestDeriveState_OnFixes_MixedThreads(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{
+		State:    "opened",
+		Draft:    false,
+		AuthorID: author.ID,
+	}
+	db.Create(mr)
+
+	// Thread 1: Author replied (on_review for this thread)
+	// Thread starter has Resolvable=true
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Now().Add(-2 * time.Hour),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	// Reply has Resolvable=false
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Now().Add(-1 * time.Hour),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	// Thread 2: Reviewer is still last (single-comment thread, on_fixes for this thread)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       3,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Now(),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	// State should be on_fixes because at least one thread awaits author response
+	state := DeriveState(db, mr)
+	if state != StateOnFixes {
+		t.Errorf("DeriveState() = %v, want %v (mixed threads, one still awaiting author)", state, StateOnFixes)
 	}
 }
 

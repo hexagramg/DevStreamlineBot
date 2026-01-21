@@ -132,11 +132,43 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 		}
 
 		for _, discussion := range discussions {
+			var threadStarterID *uint
+			var lastNoteID int
+			var nonSystemNotes []*gitlab.Note
+
 			for _, note := range discussion.Notes {
 				if note.System {
 					continue
 				}
+				nonSystemNotes = append(nonSystemNotes, note)
 
+				if threadStarterID == nil && note.Resolvable {
+					var starterUser models.User
+					if note.Author.ID != 0 {
+						starterData := models.User{
+							GitlabID:  note.Author.ID,
+							Username:  note.Author.Username,
+							Name:      note.Author.Name,
+							State:     note.Author.State,
+							AvatarURL: note.Author.AvatarURL,
+							WebURL:    note.Author.WebURL,
+						}
+						if err := db.Where(models.User{GitlabID: note.Author.ID}).Assign(starterData).FirstOrCreate(&starterUser).Error; err != nil {
+							log.Printf("Error upserting thread starter GitlabID %d: %v", note.Author.ID, err)
+						} else {
+							threadStarterID = &starterUser.ID
+						}
+					}
+				}
+			}
+
+			if len(nonSystemNotes) > 0 {
+				lastNoteID = nonSystemNotes[len(nonSystemNotes)-1].ID
+			}
+
+			var processedCommentIDs []uint
+
+			for _, note := range nonSystemNotes {
 				var author models.User
 				if note.Author.ID != 0 {
 					authorData := models.User{
@@ -184,6 +216,8 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 					ResolvedByID:       resolvedByID,
 					ResolvedAt:         note.ResolvedAt,
 					GitlabCreatedAt:    *note.CreatedAt,
+					ThreadStarterID:    threadStarterID,
+					IsLastInThread:     note.ID == lastNoteID,
 				}
 				if note.UpdatedAt != nil {
 					comment.GitlabUpdatedAt = *note.UpdatedAt
@@ -194,6 +228,7 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 						log.Printf("Error creating comment for MR %d, note %d: %v", localMRID, note.ID, err)
 						continue
 					}
+					processedCommentIDs = append(processedCommentIDs, comment.ID)
 					recordMRAction(db, localMRID, models.ActionCommentAdded, &author.ID, nil, &comment.ID, *note.CreatedAt, "")
 				} else if err == nil {
 					wasResolved := existingComment.Resolved
@@ -204,11 +239,19 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 						log.Printf("Error updating comment for MR %d, note %d: %v", localMRID, note.ID, err)
 						continue
 					}
+					processedCommentIDs = append(processedCommentIDs, comment.ID)
 
 					if note.Resolvable && !wasResolved && isResolved && note.ResolvedAt != nil {
 						recordMRAction(db, localMRID, models.ActionCommentResolved, resolvedByID, &author.ID, &comment.ID, *note.ResolvedAt, "")
 					}
 				}
+			}
+
+			if len(processedCommentIDs) > 0 && discussion.ID != "" {
+				db.Model(&models.MRComment{}).
+					Where("gitlab_discussion_id = ? AND is_last_in_thread = ? AND id NOT IN ?",
+						discussion.ID, true, processedCommentIDs).
+					Update("is_last_in_thread", false)
 			}
 		}
 
