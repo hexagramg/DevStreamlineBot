@@ -809,3 +809,257 @@ func TestFindDigestMergeRequestsWithState_UsesGlobalState(t *testing.T) {
 		t.Errorf("expected global state on_fixes, got %s", results[0].State)
 	}
 }
+
+// --- GetActiveReviewers Tests ---
+
+func TestGetActiveReviewers_NoApprovals(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewer1 := userFactory.Create()
+	reviewer2 := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2)
+
+	result, err := GetActiveReviewers(db, []uint{mr.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	activeReviewers := result[mr.ID]
+	if len(activeReviewers) != 2 {
+		t.Errorf("expected 2 active reviewers, got %d", len(activeReviewers))
+	}
+}
+
+func TestGetActiveReviewers_SomeApproved(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewer1 := userFactory.Create()
+	reviewer2 := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2)
+	testutils.AssignApprovers(db, &mr, reviewer1)
+
+	result, err := GetActiveReviewers(db, []uint{mr.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	activeReviewers := result[mr.ID]
+	if len(activeReviewers) != 1 {
+		t.Errorf("expected 1 active reviewer (reviewer2), got %d", len(activeReviewers))
+	}
+	if len(activeReviewers) == 1 && activeReviewers[0].ID != reviewer2.ID {
+		t.Errorf("expected reviewer2 to be active, got user ID %d", activeReviewers[0].ID)
+	}
+}
+
+func TestGetActiveReviewers_WithUnresolvedComments(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewer1 := userFactory.Create()
+	reviewer2 := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2)
+
+	// Reviewer1 has unresolved comment - should be excluded from active
+	testutils.CreateMRComment(db, mr, reviewer1, 1, testutils.WithResolvable())
+
+	result, err := GetActiveReviewers(db, []uint{mr.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	activeReviewers := result[mr.ID]
+	if len(activeReviewers) != 1 {
+		t.Errorf("expected 1 active reviewer (reviewer2), got %d", len(activeReviewers))
+	}
+	if len(activeReviewers) == 1 && activeReviewers[0].ID != reviewer2.ID {
+		t.Errorf("expected reviewer2 to be active, got user ID %d", activeReviewers[0].ID)
+	}
+}
+
+func TestGetActiveReviewers_MixedConditions(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewer1 := userFactory.Create() // Will approve
+	reviewer2 := userFactory.Create() // Will have unresolved comment
+	reviewer3 := userFactory.Create() // Will be active
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2, reviewer3)
+	testutils.AssignApprovers(db, &mr, reviewer1)
+	testutils.CreateMRComment(db, mr, reviewer2, 1, testutils.WithResolvable())
+
+	result, err := GetActiveReviewers(db, []uint{mr.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	activeReviewers := result[mr.ID]
+	if len(activeReviewers) != 1 {
+		t.Errorf("expected 1 active reviewer (reviewer3), got %d", len(activeReviewers))
+	}
+	if len(activeReviewers) == 1 && activeReviewers[0].ID != reviewer3.ID {
+		t.Errorf("expected reviewer3 to be active, got user ID %d", activeReviewers[0].ID)
+	}
+}
+
+func TestGetActiveReviewers_AllInactive(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewer1 := userFactory.Create()
+	reviewer2 := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2)
+	testutils.AssignApprovers(db, &mr, reviewer1, reviewer2)
+
+	result, err := GetActiveReviewers(db, []uint{mr.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	activeReviewers := result[mr.ID]
+	if len(activeReviewers) != 0 {
+		t.Errorf("expected 0 active reviewers (all approved), got %d", len(activeReviewers))
+	}
+}
+
+func TestGetActiveReviewers_EmptyInput(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	result, err := GetActiveReviewers(db, []uint{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result) != 0 {
+		t.Errorf("expected empty map for empty input, got %d entries", len(result))
+	}
+}
+
+func TestGetActiveReviewers_MultipleMRs(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewer1 := userFactory.Create()
+	reviewer2 := userFactory.Create()
+
+	mr1 := mrFactory.Create(repo, author)
+	mr2 := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr1, reviewer1, reviewer2)
+	testutils.AssignReviewers(db, &mr2, reviewer1, reviewer2)
+
+	// MR1: reviewer1 approved
+	testutils.AssignApprovers(db, &mr1, reviewer1)
+	// MR2: reviewer2 has unresolved comment
+	testutils.CreateMRComment(db, mr2, reviewer2, 1, testutils.WithResolvable())
+
+	result, err := GetActiveReviewers(db, []uint{mr1.ID, mr2.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mr1Active := result[mr1.ID]
+	if len(mr1Active) != 1 {
+		t.Errorf("MR1: expected 1 active reviewer, got %d", len(mr1Active))
+	}
+	if len(mr1Active) == 1 && mr1Active[0].ID != reviewer2.ID {
+		t.Errorf("MR1: expected reviewer2 active, got user ID %d", mr1Active[0].ID)
+	}
+
+	mr2Active := result[mr2.ID]
+	if len(mr2Active) != 1 {
+		t.Errorf("MR2: expected 1 active reviewer, got %d", len(mr2Active))
+	}
+	if len(mr2Active) == 1 && mr2Active[0].ID != reviewer1.ID {
+		t.Errorf("MR2: expected reviewer1 active, got user ID %d", mr2Active[0].ID)
+	}
+}
+
+func TestGetActiveReviewers_ResolvedCommentDoesNotExclude(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewer := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+
+	// Reviewer has a resolved comment - should still be active
+	testutils.CreateMRComment(db, mr, reviewer, 1, testutils.WithResolvable(), testutils.WithResolved(&author))
+
+	result, err := GetActiveReviewers(db, []uint{mr.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	activeReviewers := result[mr.ID]
+	if len(activeReviewers) != 1 {
+		t.Errorf("expected 1 active reviewer (resolved comment doesn't exclude), got %d", len(activeReviewers))
+	}
+}
+
+func TestGetActiveReviewers_NonResolvableCommentDoesNotExclude(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewer := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewer)
+
+	// Reviewer has non-resolvable comment - should still be active
+	testutils.CreateMRComment(db, mr, reviewer, 1)
+
+	result, err := GetActiveReviewers(db, []uint{mr.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	activeReviewers := result[mr.ID]
+	if len(activeReviewers) != 1 {
+		t.Errorf("expected 1 active reviewer (non-resolvable comment doesn't exclude), got %d", len(activeReviewers))
+	}
+}

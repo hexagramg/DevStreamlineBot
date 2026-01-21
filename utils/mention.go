@@ -97,12 +97,20 @@ func BuildReviewDigest(db *gorm.DB, mrs []models.MergeRequest) string {
 		return "No pending reviews found."
 	}
 
+	mrIDs := make([]uint, len(mrs))
+	for i, mr := range mrs {
+		mrIDs[i] = mr.ID
+	}
+
+	activeReviewersMap, err := GetActiveReviewers(db, mrIDs)
+	if err != nil {
+		activeReviewersMap = make(map[uint][]models.User)
+	}
+
 	var allUsers []models.User
 	for _, mr := range mrs {
 		allUsers = append(allUsers, mr.Author)
-		if len(mr.Reviewers) > 0 {
-			allUsers = append(allUsers, mr.Reviewers[0])
-		}
+		allUsers = append(allUsers, activeReviewersMap[mr.ID]...)
 	}
 	mentionMap := BatchGetUserMentions(db, allUsers)
 
@@ -110,14 +118,21 @@ func BuildReviewDigest(db *gorm.DB, mrs []models.MergeRequest) string {
 	sb.WriteString("REVIEW DIGEST:")
 	for _, mr := range mrs {
 		authorMention := mentionMap[mr.Author.ID]
-		reviewerMention := ""
-		if len(mr.Reviewers) > 0 {
-			reviewerMention = mentionMap[mr.Reviewers[0].ID]
+
+		activeReviewers := activeReviewersMap[mr.ID]
+		reviewerMentions := make([]string, 0, len(activeReviewers))
+		for _, r := range activeReviewers {
+			reviewerMentions = append(reviewerMentions, "@["+mentionMap[r.ID]+"]")
 		}
+		reviewerStr := strings.Join(reviewerMentions, ", ")
+		if reviewerStr == "" {
+			reviewerStr = "none"
+		}
+
 		sanitizedTitle := SanitizeTitle(mr.Title)
 		repoName := mr.Repository.Name
 		sb.WriteString(
-			fmt.Sprintf("\n- [%s] %s\n  %s\n  author: @[%s] reviewer: @[%s]\n\n", repoName, sanitizedTitle, mr.WebURL, authorMention, reviewerMention),
+			fmt.Sprintf("\n- [%s] %s\n  %s\n  author: @[%s] reviewer: %s\n\n", repoName, sanitizedTitle, mr.WebURL, authorMention, reviewerStr),
 		)
 	}
 	return sb.String()
@@ -128,10 +143,20 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 		return "No pending reviews found."
 	}
 
+	mrIDs := make([]uint, len(digestMRs))
+	for i, dmr := range digestMRs {
+		mrIDs[i] = dmr.MR.ID
+	}
+
+	activeReviewersMap, err := GetActiveReviewers(db, mrIDs)
+	if err != nil {
+		activeReviewersMap = make(map[uint][]models.User)
+	}
+
 	var allUsers []models.User
 	for _, dmr := range digestMRs {
 		allUsers = append(allUsers, dmr.MR.Author)
-		allUsers = append(allUsers, dmr.MR.Reviewers...)
+		allUsers = append(allUsers, activeReviewersMap[dmr.MR.ID]...)
 	}
 	mentionMap := BatchGetUserMentions(db, allUsers)
 
@@ -159,7 +184,7 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 	if len(pendingReview) > 0 {
 		sb.WriteString("PENDING REVIEW:\n")
 		for _, dmr := range pendingReview {
-			writeDigestEntry(&sb, &dmr, mentionMap)
+			writeDigestEntry(&sb, &dmr, mentionMap, activeReviewersMap[dmr.MR.ID])
 		}
 	}
 
@@ -169,7 +194,7 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 		}
 		sb.WriteString("PENDING FIXES:\n")
 		for _, dmr := range pendingFixes {
-			writeDigestEntry(&sb, &dmr, mentionMap)
+			writeDigestEntry(&sb, &dmr, mentionMap, activeReviewersMap[dmr.MR.ID])
 		}
 	}
 
@@ -180,12 +205,12 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 	return sb.String()
 }
 
-func writeDigestEntry(sb *strings.Builder, dmr *DigestMR, mentionMap map[uint]string) {
+func writeDigestEntry(sb *strings.Builder, dmr *DigestMR, mentionMap map[uint]string, activeReviewers []models.User) {
 	mr := &dmr.MR
 	authorMention := mentionMap[mr.Author.ID]
 
-	reviewerMentions := make([]string, 0, len(mr.Reviewers))
-	for _, r := range mr.Reviewers {
+	reviewerMentions := make([]string, 0, len(activeReviewers))
+	for _, r := range activeReviewers {
 		reviewerMentions = append(reviewerMentions, "@["+mentionMap[r.ID]+"]")
 	}
 	reviewerStr := strings.Join(reviewerMentions, ", ")
@@ -234,22 +259,41 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs, authorOnReviewMRs,
 		return fmt.Sprintf("No pending actions for %s.", username)
 	}
 
+	var allMRIDs []uint
+	for _, dmr := range reviewMRs {
+		allMRIDs = append(allMRIDs, dmr.MR.ID)
+	}
+	for _, dmr := range fixesMRs {
+		allMRIDs = append(allMRIDs, dmr.MR.ID)
+	}
+	for _, dmr := range authorOnReviewMRs {
+		allMRIDs = append(allMRIDs, dmr.MR.ID)
+	}
+	for _, dmr := range releaseMRs {
+		allMRIDs = append(allMRIDs, dmr.MR.ID)
+	}
+
+	activeReviewersMap, err := GetActiveReviewers(db, allMRIDs)
+	if err != nil {
+		activeReviewersMap = make(map[uint][]models.User)
+	}
+
 	var allUsers []models.User
 	for _, dmr := range reviewMRs {
 		allUsers = append(allUsers, dmr.MR.Author)
-		allUsers = append(allUsers, dmr.MR.Reviewers...)
+		allUsers = append(allUsers, activeReviewersMap[dmr.MR.ID]...)
 	}
 	for _, dmr := range fixesMRs {
 		allUsers = append(allUsers, dmr.MR.Author)
-		allUsers = append(allUsers, dmr.MR.Reviewers...)
+		allUsers = append(allUsers, activeReviewersMap[dmr.MR.ID]...)
 	}
 	for _, dmr := range authorOnReviewMRs {
 		allUsers = append(allUsers, dmr.MR.Author)
-		allUsers = append(allUsers, dmr.MR.Reviewers...)
+		allUsers = append(allUsers, activeReviewersMap[dmr.MR.ID]...)
 	}
 	for _, dmr := range releaseMRs {
 		allUsers = append(allUsers, dmr.MR.Author)
-		allUsers = append(allUsers, dmr.MR.Reviewers...)
+		allUsers = append(allUsers, activeReviewersMap[dmr.MR.ID]...)
 	}
 	mentionMap := BatchGetUserMentions(db, allUsers)
 
@@ -269,21 +313,21 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs, authorOnReviewMRs,
 	if len(reviewMRs) > 0 {
 		sb.WriteString("\nPENDING REVIEW:\n")
 		for _, dmr := range reviewMRs {
-			writeDigestEntry(&sb, &dmr, mentionMap)
+			writeDigestEntry(&sb, &dmr, mentionMap, activeReviewersMap[dmr.MR.ID])
 		}
 	}
 
 	if len(fixesMRs) > 0 {
 		sb.WriteString("\nPENDING FIXES:\n")
 		for _, dmr := range fixesMRs {
-			writeDigestEntry(&sb, &dmr, mentionMap)
+			writeDigestEntry(&sb, &dmr, mentionMap, activeReviewersMap[dmr.MR.ID])
 		}
 	}
 
 	if len(authorOnReviewMRs) > 0 {
 		sb.WriteString("\nMY MRS IN REVIEW:\n")
 		for _, dmr := range authorOnReviewMRs {
-			writeDigestEntry(&sb, &dmr, mentionMap)
+			writeDigestEntry(&sb, &dmr, mentionMap, activeReviewersMap[dmr.MR.ID])
 		}
 	}
 

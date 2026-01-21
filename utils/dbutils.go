@@ -302,6 +302,104 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 	return reviewMRs, fixesMRs, authorOnReviewMRs, nil
 }
 
+// GetActiveReviewers returns active reviewers for each MR.
+// A reviewer is active if they: are assigned, haven't approved, and have no unresolved resolvable comments they authored.
+func GetActiveReviewers(db *gorm.DB, mrIDs []uint) (map[uint][]models.User, error) {
+	result := make(map[uint][]models.User)
+	if len(mrIDs) == 0 {
+		return result, nil
+	}
+
+	type ReviewerRow struct {
+		MergeRequestID uint `gorm:"column:merge_request_id"`
+		UserID         uint `gorm:"column:user_id"`
+	}
+
+	var reviewerRows []ReviewerRow
+	if err := db.Table("merge_request_reviewers").
+		Where("merge_request_id IN ?", mrIDs).
+		Scan(&reviewerRows).Error; err != nil {
+		return nil, err
+	}
+
+	var approverRows []ReviewerRow
+	if err := db.Table("merge_request_approvers").
+		Where("merge_request_id IN ?", mrIDs).
+		Scan(&approverRows).Error; err != nil {
+		return nil, err
+	}
+
+	approverSet := make(map[uint]map[uint]bool)
+	for _, row := range approverRows {
+		if approverSet[row.MergeRequestID] == nil {
+			approverSet[row.MergeRequestID] = make(map[uint]bool)
+		}
+		approverSet[row.MergeRequestID][row.UserID] = true
+	}
+
+	type CommentAuthorRow struct {
+		MergeRequestID uint `gorm:"column:merge_request_id"`
+		AuthorID       uint `gorm:"column:author_id"`
+	}
+	var commentAuthors []CommentAuthorRow
+	if err := db.Table("mr_comments").
+		Select("DISTINCT merge_request_id, author_id").
+		Where("merge_request_id IN ? AND resolvable = ? AND resolved = ?", mrIDs, true, false).
+		Scan(&commentAuthors).Error; err != nil {
+		return nil, err
+	}
+
+	hasUnresolvedComment := make(map[uint]map[uint]bool)
+	for _, row := range commentAuthors {
+		if hasUnresolvedComment[row.MergeRequestID] == nil {
+			hasUnresolvedComment[row.MergeRequestID] = make(map[uint]bool)
+		}
+		hasUnresolvedComment[row.MergeRequestID][row.AuthorID] = true
+	}
+
+	activeReviewerIDs := make(map[uint][]uint)
+	allUserIDs := make(map[uint]bool)
+	for _, row := range reviewerRows {
+		if approverSet[row.MergeRequestID][row.UserID] {
+			continue
+		}
+		if hasUnresolvedComment[row.MergeRequestID][row.UserID] {
+			continue
+		}
+		activeReviewerIDs[row.MergeRequestID] = append(activeReviewerIDs[row.MergeRequestID], row.UserID)
+		allUserIDs[row.UserID] = true
+	}
+
+	if len(allUserIDs) == 0 {
+		return result, nil
+	}
+
+	userIDList := make([]uint, 0, len(allUserIDs))
+	for id := range allUserIDs {
+		userIDList = append(userIDList, id)
+	}
+
+	var users []models.User
+	if err := db.Where("id IN ?", userIDList).Find(&users).Error; err != nil {
+		return nil, err
+	}
+
+	userMap := make(map[uint]models.User)
+	for _, u := range users {
+		userMap[u.ID] = u
+	}
+
+	for mrID, reviewerIDs := range activeReviewerIDs {
+		for _, reviewerID := range reviewerIDs {
+			if user, ok := userMap[reviewerID]; ok {
+				result[mrID] = append(result[mrID], user)
+			}
+		}
+	}
+
+	return result, nil
+}
+
 // FindReleaseManagerActionMRs returns MRs that are fully approved and ready for release
 // for repositories where the user is a release manager.
 func FindReleaseManagerActionMRs(db *gorm.DB, userID uint) ([]DigestMR, error) {
