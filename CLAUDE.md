@@ -136,6 +136,29 @@ MR states are derived dynamically based on DB data (not stored as a field):
 
 **Working time** calculation excludes weekends and configured holidays (stored in `Holiday` table).
 
+### Per-User Action Tracking
+
+The `/actions` command and personal daily digest use **per-user action tracking** instead of global MR state:
+
+**Reviewers need action if:**
+- Assigned as reviewer AND
+- Haven't approved AND
+- Have NO unresolved resolvable comments they authored
+
+**Authors need action if:**
+- MR is draft OR
+- Has any unresolved resolvable comments (regardless of who authored them)
+
+This naturally handles the re-review cycle:
+1. Reviewer assigned → needs action (no comments yet)
+2. Reviewer creates thread → no action needed (waiting for author to fix)
+3. Author resolves thread → reviewer needs action again (re-review)
+4. Reviewer approves or creates new thread → cycle continues
+
+Key function: `FindUserActionMRs(db, userID)` returns MRs requiring action from a specific user.
+
+**Note:** Global MR state (`on_review`, `on_fixes`) is still used for general daily digests and SLA tracking.
+
 ## Bot Commands
 
 ### Core Commands

@@ -212,6 +212,13 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		Where("merge_requests.state = ? AND merge_requests.merged_at IS NULL", "opened").
 		Where("EXISTS (SELECT 1 FROM merge_request_reviewers mrr WHERE mrr.merge_request_id = merge_requests.id AND mrr.user_id = ?)", userID).
 		Where("NOT EXISTS (SELECT 1 FROM merge_request_approvers mra WHERE mra.merge_request_id = merge_requests.id AND mra.user_id = ?)", userID).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM mr_comments mc
+			WHERE mc.merge_request_id = merge_requests.id
+			  AND mc.author_id = ?
+			  AND mc.resolvable = ?
+			  AND mc.resolved = ?
+		)`, userID, true, false).
 		Find(&reviewerMRs).Error
 	if err != nil {
 		return nil, nil, nil, err
@@ -237,9 +244,6 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		}
 
 		stateInfo := GetStateInfo(db, &mr)
-		if stateInfo.State != StateOnReview {
-			continue
-		}
 
 		blocked := IsMRBlocked(db, &mr)
 		sla, _ := GetRepositorySLA(db, mr.RepositoryID)

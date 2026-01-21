@@ -847,3 +847,4 @@ func TestGetStateInfo_BlockDuringStateTransition(t *testing.T) {
 		t.Errorf("GetStateInfo().WorkingTime = %v, should never be negative", info.WorkingTime)
 	}
 }
+
