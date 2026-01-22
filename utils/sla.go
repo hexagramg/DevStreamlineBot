@@ -212,3 +212,65 @@ func IsWorkingDay(db *gorm.DB, repoID uint, date time.Time) bool {
 
 	return count == 0
 }
+
+// CalculateWorkingTimeFromCache calculates working time excluding weekends and holidays using cached holiday data.
+func CalculateWorkingTimeFromCache(repoID uint, start, end time.Time, holidaySet map[string]bool) time.Duration {
+	if end.Before(start) || end.Equal(start) {
+		return 0
+	}
+
+	start = start.UTC()
+	end = end.UTC()
+
+	if holidaySet == nil {
+		holidaySet = make(map[string]bool)
+	}
+
+	startDay := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, start.Location())
+	endDay := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, end.Location())
+
+	if startDay.Equal(endDay) {
+		if isWorkingDaySimple(start.Weekday(), startDay.Format("2006-01-02"), holidaySet) {
+			return end.Sub(start)
+		}
+		return 0
+	}
+
+	var totalHours float64
+
+	if isWorkingDaySimple(start.Weekday(), startDay.Format("2006-01-02"), holidaySet) {
+		nextMidnight := startDay.AddDate(0, 0, 1)
+		totalHours += nextMidnight.Sub(start).Hours()
+	}
+
+	middleStart := startDay.AddDate(0, 0, 1)
+	middleEnd := endDay
+	if middleStart.Before(middleEnd) {
+		totalMiddleDays := int(middleEnd.Sub(middleStart).Hours() / 24)
+		weekendDays := countWeekendsInRange(middleStart, middleEnd)
+
+		holidaysOnWeekdays := 0
+		for dateKey := range holidaySet {
+			date, err := time.ParseInLocation("2006-01-02", dateKey, start.Location())
+			if err != nil {
+				continue
+			}
+			if !date.Before(middleStart) && date.Before(middleEnd) {
+				if date.Weekday() != time.Saturday && date.Weekday() != time.Sunday {
+					holidaysOnWeekdays++
+				}
+			}
+		}
+
+		workingDays := totalMiddleDays - weekendDays - holidaysOnWeekdays
+		if workingDays > 0 {
+			totalHours += float64(workingDays) * 24
+		}
+	}
+
+	if isWorkingDaySimple(end.Weekday(), endDay.Format("2006-01-02"), holidaySet) {
+		totalHours += end.Sub(endDay).Hours()
+	}
+
+	return time.Duration(totalHours * float64(time.Hour))
+}

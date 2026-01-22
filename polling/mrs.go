@@ -270,7 +270,12 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 					}
 				}
 
-				comment := models.MRComment{
+				gitlabCreatedAt := time.Now()
+			if note.CreatedAt != nil {
+				gitlabCreatedAt = *note.CreatedAt
+			}
+
+			comment := models.MRComment{
 					MergeRequestID:     localMRID,
 					GitlabNoteID:       note.ID,
 					GitlabDiscussionID: discussion.ID,
@@ -280,7 +285,7 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 					Resolved:           note.Resolved,
 					ResolvedByID:       resolvedByID,
 					ResolvedAt:         note.ResolvedAt,
-					GitlabCreatedAt:    *note.CreatedAt,
+					GitlabCreatedAt:    gitlabCreatedAt,
 					ThreadStarterID:    threadStarterID,
 					IsLastInThread:     note.ID == lastNoteID,
 				}
@@ -294,7 +299,7 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 						continue
 					}
 					processedCommentIDs = append(processedCommentIDs, comment.ID)
-					recordMRAction(db, localMRID, models.ActionCommentAdded, &author.ID, nil, &comment.ID, *note.CreatedAt, "")
+					recordMRAction(db, localMRID, models.ActionCommentAdded, &author.ID, nil, &comment.ID, gitlabCreatedAt, "")
 				} else if err == nil {
 					wasResolved := existingComment.Resolved
 					isResolved := note.Resolved

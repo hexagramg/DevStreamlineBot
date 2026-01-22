@@ -51,7 +51,7 @@ func StartUserEmailPolling(db *gorm.DB, client *gitlab.Client, interval time.Dur
 				NewEmail string
 			}
 			if err := db.Table("users u").Select("u.id as user_id, vu.user_id as new_email").
-				Joins("JOIN vk_users vu on vu.user_id LIKE CONCAT(u.username, '@%')").
+				Joins("JOIN vk_users vu on vu.user_id LIKE (u.username || '@%')").
 				Where("u.email = '' AND u.email_fetched = true AND u.username <> ''").
 				Order("u.id, vu.id desc").
 				Scan(&mappings).Error; err != nil {

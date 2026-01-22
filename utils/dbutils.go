@@ -103,52 +103,24 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 		return nil, nil
 	}
 
-	slaMap := make(map[uint]*models.RepositorySLA)
-	var slas []models.RepositorySLA
-	db.Where("repository_id IN ?", repoIDs).Find(&slas)
-	for i := range slas {
-		slaMap[slas[i].RepositoryID] = &slas[i]
-	}
-
-	var blockLabels []models.BlockLabel
-	db.Where("repository_id IN ?", repoIDs).Find(&blockLabels)
-	blockLabelMap := make(map[uint]map[string]struct{})
-	for _, bl := range blockLabels {
-		if blockLabelMap[bl.RepositoryID] == nil {
-			blockLabelMap[bl.RepositoryID] = make(map[string]struct{})
-		}
-		blockLabelMap[bl.RepositoryID][bl.LabelName] = struct{}{}
-	}
-
-	var releaseLabels []models.ReleaseLabel
-	db.Where("repository_id IN ?", repoIDs).Find(&releaseLabels)
-	releaseLabelMap := make(map[uint]map[string]struct{})
-	for _, rl := range releaseLabels {
-		if releaseLabelMap[rl.RepositoryID] == nil {
-			releaseLabelMap[rl.RepositoryID] = make(map[string]struct{})
-		}
-		releaseLabelMap[rl.RepositoryID][rl.LabelName] = struct{}{}
+	// Load cache for all MRs
+	mrIDs, collectedRepoIDs := CollectUniqueIDs(mrs)
+	cache, err := LoadMRDataCache(db, mrIDs, collectedRepoIDs)
+	if err != nil {
+		return nil, err
 	}
 
 	var digestMRs []DigestMR
 	for _, mr := range mrs {
-		if hasReleaseLabelFromCache(mr.Labels, releaseLabelMap[mr.RepositoryID]) {
+		if cache.HasReleaseLabelFromCache(mr.Labels, mr.RepositoryID) {
 			continue
 		}
 
-		stateInfo := GetStateInfo(db, &mr)
+		stateInfo := GetStateInfoFromCache(&mr, cache)
 
-		blocked := isMRBlockedFromCache(mr.Labels, blockLabelMap[mr.RepositoryID])
+		blocked := cache.IsMRBlockedFromCache(mr.Labels, mr.RepositoryID)
 
-		sla := slaMap[mr.RepositoryID]
-		if sla == nil {
-			sla = &models.RepositorySLA{
-				RepositoryID:   mr.RepositoryID,
-				ReviewDuration: DefaultSLADuration,
-				FixesDuration:  DefaultSLADuration,
-				AssignCount:    1,
-			}
-		}
+		sla := cache.GetSLAFromCache(mr.RepositoryID)
 
 		var threshold time.Duration
 		if stateInfo.State == StateOnReview {
@@ -173,29 +145,6 @@ func FindDigestMergeRequestsWithState(db *gorm.DB, repoIDs []uint) ([]DigestMR, 
 	return digestMRs, nil
 }
 
-func isMRBlockedFromCache(labels []models.Label, blockLabels map[string]struct{}) bool {
-	if len(labels) == 0 || len(blockLabels) == 0 {
-		return false
-	}
-	for _, l := range labels {
-		if _, ok := blockLabels[l.Name]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func hasReleaseLabelFromCache(labels []models.Label, releaseLabels map[string]struct{}) bool {
-	if len(labels) == 0 || len(releaseLabels) == 0 {
-		return false
-	}
-	for _, l := range labels {
-		if _, ok := releaseLabels[l.Name]; ok {
-			return true
-		}
-	}
-	return false
-}
 
 // FindUserActionMRs returns MRs requiring action from a specific user.
 // Returns three slices:
@@ -244,17 +193,31 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		return nil, nil, nil, err
 	}
 
+	// Collect all MRs and load cache once
+	allMRs := append([]models.MergeRequest{}, reviewerMRs...)
+	allMRs = append(allMRs, authorMRs...)
+
+	if len(allMRs) == 0 {
+		return nil, nil, nil, nil
+	}
+
+	mrIDs, repoIDs := CollectUniqueIDs(allMRs)
+	cache, err := LoadMRDataCache(db, mrIDs, repoIDs)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
 	for _, mr := range reviewerMRs {
-		if HasReleaseLabel(db, &mr) {
+		if cache.HasReleaseLabelFromCache(mr.Labels, mr.RepositoryID) {
 			continue
 		}
 
-		stateInfo := GetStateInfo(db, &mr)
-		userStateSince := GetUserStateTransitionTime(db, &mr, userID)
-		workingTime := calculateUserWorkingTime(db, &mr, userStateSince)
+		stateInfo := GetStateInfoFromCache(&mr, cache)
+		userStateSince := GetUserStateTransitionTimeFromCache(&mr, userID, cache)
+		workingTime := calculateUserWorkingTimeFromCache(&mr, userStateSince, cache)
 
-		blocked := IsMRBlocked(db, &mr)
-		sla, _ := GetRepositorySLA(db, mr.RepositoryID)
+		blocked := cache.IsMRBlockedFromCache(mr.Labels, mr.RepositoryID)
+		sla := cache.GetSLAFromCache(mr.RepositoryID)
 		threshold := sla.ReviewDuration.ToDuration()
 		exceeded, percentage := CheckSLAStatus(workingTime, threshold)
 
@@ -270,16 +233,16 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 	}
 
 	for _, mr := range authorMRs {
-		if HasReleaseLabel(db, &mr) {
+		if cache.HasReleaseLabelFromCache(mr.Labels, mr.RepositoryID) {
 			continue
 		}
 
-		stateInfo := GetStateInfo(db, &mr)
-		userStateSince := GetUserStateTransitionTime(db, &mr, userID)
-		workingTime := calculateUserWorkingTime(db, &mr, userStateSince)
+		stateInfo := GetStateInfoFromCache(&mr, cache)
+		userStateSince := GetUserStateTransitionTimeFromCache(&mr, userID, cache)
+		workingTime := calculateUserWorkingTimeFromCache(&mr, userStateSince, cache)
 
-		blocked := IsMRBlocked(db, &mr)
-		sla, _ := GetRepositorySLA(db, mr.RepositoryID)
+		blocked := cache.IsMRBlockedFromCache(mr.Labels, mr.RepositoryID)
+		sla := cache.GetSLAFromCache(mr.RepositoryID)
 
 		if stateInfo.State == StateOnFixes || stateInfo.State == StateDraft {
 			threshold := sla.FixesDuration.ToDuration()
@@ -324,6 +287,24 @@ func calculateUserWorkingTime(db *gorm.DB, mr *models.MergeRequest, stateSince *
 	workingTime := CalculateWorkingTime(db, mr.RepositoryID, *stateSince, now)
 
 	blockedTime := CalculateBlockedTime(db, mr.ID, mr.RepositoryID, *stateSince, now)
+	workingTime -= blockedTime
+	if workingTime < 0 {
+		workingTime = 0
+	}
+
+	return workingTime
+}
+
+// calculateUserWorkingTimeFromCache calculates working time using cached data.
+func calculateUserWorkingTimeFromCache(mr *models.MergeRequest, stateSince *time.Time, cache *MRDataCache) time.Duration {
+	if stateSince == nil {
+		return 0
+	}
+
+	now := time.Now()
+	workingTime := CalculateWorkingTimeFromCache(mr.RepositoryID, *stateSince, now, cache.Holidays[mr.RepositoryID])
+
+	blockedTime := CalculateBlockedTimeFromCache(mr.ID, mr.RepositoryID, *stateSince, now, cache.Actions[mr.ID], cache.Holidays[mr.RepositoryID])
 	workingTime -= blockedTime
 	if workingTime < 0 {
 		workingTime = 0
@@ -485,9 +466,20 @@ func FindReleaseManagerActionMRs(db *gorm.DB, userID uint) ([]DigestMR, error) {
 		return nil, err
 	}
 
+	if len(mrs) == 0 {
+		return nil, nil
+	}
+
+	// Load cache for all MRs
+	mrIDs, collectedRepoIDs := CollectUniqueIDs(mrs)
+	cache, err := LoadMRDataCache(db, mrIDs, collectedRepoIDs)
+	if err != nil {
+		return nil, err
+	}
+
 	var releaseMRs []DigestMR
 	for _, mr := range mrs {
-		if HasReleaseLabel(db, &mr) {
+		if cache.HasReleaseLabelFromCache(mr.Labels, mr.RepositoryID) {
 			continue
 		}
 
@@ -495,8 +487,8 @@ func FindReleaseManagerActionMRs(db *gorm.DB, userID uint) ([]DigestMR, error) {
 			continue
 		}
 
-		stateInfo := GetStateInfo(db, &mr)
-		blocked := IsMRBlocked(db, &mr)
+		stateInfo := GetStateInfoFromCache(&mr, cache)
+		blocked := cache.IsMRBlockedFromCache(mr.Labels, mr.RepositoryID)
 
 		releaseMRs = append(releaseMRs, DigestMR{
 			MR:          mr,
