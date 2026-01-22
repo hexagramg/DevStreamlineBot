@@ -322,7 +322,14 @@ func CreateMRAction(db *gorm.DB, mr models.MergeRequest, actionType models.MRAct
 type CommentOption func(*models.MRComment)
 
 func WithResolvable() CommentOption {
-	return func(c *models.MRComment) { c.Resolvable = true }
+	return func(c *models.MRComment) {
+		c.Resolvable = true
+		// In GitLab, resolvable comments are always thread starters.
+		// For single-comment threads, they're also the last in thread.
+		// Tests can override IsLastInThread=false for multi-comment threads.
+		c.ThreadStarterID = &c.AuthorID
+		c.IsLastInThread = true
+	}
 }
 
 func WithResolved(resolvedBy *models.User) CommentOption {
@@ -346,6 +353,10 @@ func WithThreadStarter(user *models.User) CommentOption {
 
 func WithIsLastInThread() CommentOption {
 	return func(c *models.MRComment) { c.IsLastInThread = true }
+}
+
+func WithNotLastInThread() CommentOption {
+	return func(c *models.MRComment) { c.IsLastInThread = false }
 }
 
 func WithDiscussionID(id string) CommentOption {

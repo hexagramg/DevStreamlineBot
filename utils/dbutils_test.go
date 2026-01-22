@@ -1142,7 +1142,8 @@ func TestFindUserActionMRs_ReviewerNeedsActionAfterAuthorReply(t *testing.T) {
 	testutils.CreateMRComment(db, mr, reviewer, 1,
 		testutils.WithResolvable(),
 		testutils.WithDiscussionID(discussionID),
-		testutils.WithThreadStarter(&reviewer))
+		testutils.WithThreadStarter(&reviewer),
+		testutils.WithNotLastInThread()) // Not last since author will reply
 
 	// Author replies (becomes last in thread, replies have Resolvable=false)
 	testutils.CreateMRComment(db, mr, author, 2,
@@ -1180,7 +1181,8 @@ func TestGetActiveReviewers_AfterAuthorReply(t *testing.T) {
 	testutils.CreateMRComment(db, mr, reviewer, 1,
 		testutils.WithResolvable(),
 		testutils.WithDiscussionID(discussionID),
-		testutils.WithThreadStarter(&reviewer))
+		testutils.WithThreadStarter(&reviewer),
+		testutils.WithNotLastInThread()) // Not last since author will reply
 
 	// Author replies (becomes last in thread, replies have Resolvable=false)
 	testutils.CreateMRComment(db, mr, author, 2,

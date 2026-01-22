@@ -1101,3 +1101,1254 @@ func TestDeriveState_OnFixes_MixedThreads(t *testing.T) {
 	}
 }
 
+// TestGetStateTransitionTime_OnFixes_MultiCommentThread tests that GetStateTransitionTime
+// returns the thread STARTER's creation time, not the follow-up's time.
+// Bug scenario: Thread started at 9am, reviewer follows up at 3pm.
+// MR has been waiting for author since 9am, but old code returned 3pm.
+func TestGetStateTransitionTime_OnFixes_MultiCommentThread(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	discussionID := "disc-multi-transition"
+	starterTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)  // T=9am (thread started)
+	followUpTime := time.Date(2024, 1, 15, 15, 0, 0, 0, time.UTC) // T=3pm (follow-up)
+
+	// Thread starter: reviewer opens thread at 9am
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: discussionID,
+		AuthorID:           reviewer.ID,
+		Resolvable:         true, // Only starter is resolvable
+		Resolved:           false,
+		GitlabCreatedAt:    starterTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false, // NOT last - there's a follow-up
+	})
+
+	// Reviewer's follow-up at 3pm (still waiting for author)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: discussionID,
+		AuthorID:           reviewer.ID,
+		Resolvable:         false, // Replies have Resolvable=false
+		Resolved:           false,
+		GitlabCreatedAt:    followUpTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true, // IS last comment in thread
+	})
+
+	// Should return thread starter's time (9am), not follow-up's time (3pm)
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(starterTime) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v (thread starter time, not follow-up)",
+			transitionTime, starterTime)
+	}
+}
+
+// TestGetStateTransitionTime_OnFixes_MultipleThreads tests that with multiple unresolved
+// threads, we return the EARLIEST thread starter's time.
+func TestGetStateTransitionTime_OnFixes_MultipleThreads(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	earlierTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)  // First thread at 9am
+	laterTime := time.Date(2024, 1, 15, 14, 0, 0, 0, time.UTC)   // Second thread at 2pm
+
+	// First thread (earlier)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    earlierTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	// Second thread (later)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    laterTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	// Should return earliest thread's time
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(earlierTime) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v (earliest thread starter time)",
+			transitionTime, earlierTime)
+	}
+}
+
+func TestGetStateTransitionTime_OnFixes_AuthorRepliedThenReviewerResponded(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	discussionID := "disc-reply-cycle"
+	threadStartTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: discussionID,
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    threadStartTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: discussionID,
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       3,
+		GitlabDiscussionID: discussionID,
+		AuthorID:           reviewer.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 14, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(threadStartTime) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v", transitionTime, threadStartTime)
+	}
+}
+
+func TestGetStateTransitionTime_OnFixes_MultipleThreadsDifferentReplyCycles(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	t1Start := time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC)
+	t2Start := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    t1Start,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       3,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       4,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    t2Start,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(t1Start) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v", transitionTime, t1Start)
+	}
+}
+
+func TestGetStateTransitionTime_OnFixes_ResolvedThreadStillCounts(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	thread1Time := time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC)
+	thread2Time := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
+	resolvedAt := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           true,
+		ResolvedAt:         &resolvedAt,
+		GitlabCreatedAt:    thread1Time,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    thread2Time,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(thread1Time) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v", transitionTime, thread1Time)
+	}
+}
+
+func TestGetStateTransitionTime_OnFixes_AllResolvedThenNewThread(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	thread1Time := time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC)
+	resolvedAt := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
+	thread2Time := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           true,
+		ResolvedAt:         &resolvedAt,
+		GitlabCreatedAt:    thread1Time,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    thread2Time,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(thread2Time) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v", transitionTime, thread2Time)
+	}
+}
+
+func TestGetStateTransitionTime_OnFixes_OverlappingResolutionsThenGap(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	t1Start := time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC)
+	t2Start := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
+	t2Resolved := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+	t1Resolved := time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC)
+	t3Start := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           true,
+		ResolvedAt:         &t1Resolved,
+		GitlabCreatedAt:    t1Start,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           true,
+		ResolvedAt:         &t2Resolved,
+		GitlabCreatedAt:    t2Start,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       3,
+		GitlabDiscussionID: "disc-3",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    t3Start,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(t3Start) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v", transitionTime, t3Start)
+	}
+}
+
+func TestGetStateTransitionTime_OnFixes_AuthorLastVsReviewerLast(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	t1Start := time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC)
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-author-last",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    t1Start,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-author-last",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       3,
+		GitlabDiscussionID: "disc-reviewer-last",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(t1Start) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v", transitionTime, t1Start)
+	}
+}
+
+func TestGetStateTransitionTime_OnFixes_MultipleBackAndForth(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	discussionID := "disc-back-and-forth"
+	times := []time.Time{
+		time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC),
+		time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC),
+		time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC),
+		time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC),
+	}
+	authors := []*models.User{reviewer, author, reviewer, author, reviewer}
+
+	for i, tm := range times {
+		isLast := i == len(times)-1
+		db.Create(&models.MRComment{
+			MergeRequestID:     mr.ID,
+			GitlabNoteID:       i + 1,
+			GitlabDiscussionID: discussionID,
+			AuthorID:           authors[i].ID,
+			Resolvable:         i == 0,
+			Resolved:           false,
+			GitlabCreatedAt:    tm,
+			ThreadStarterID:    &reviewer.ID,
+			IsLastInThread:     isLast,
+		})
+	}
+
+	expectedTime := times[0]
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(expectedTime) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v", transitionTime, expectedTime)
+	}
+}
+
+func TestGetStateTransitionTime_OnFixes_ThreeThreadsComplex(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	thread1Time := time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC)
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    thread1Time,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       3,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 14, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       4,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       5,
+		GitlabDiscussionID: "disc-3",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       6,
+		GitlabDiscussionID: "disc-3",
+		AuthorID:           reviewer.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 13, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(thread1Time) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v", transitionTime, thread1Time)
+	}
+}
+
+func TestGetStateTransitionTime_OnFixes_AuthorStartedThread(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	authorStartTime := time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC)
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-author-started",
+		AuthorID:           author.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    authorStartTime,
+		ThreadStarterID:    &author.ID,
+		IsLastInThread:     false,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-author-started",
+		AuthorID:           reviewer.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &author.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(authorStartTime) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v", transitionTime, authorStartTime)
+	}
+}
+
+func TestGetStateTransitionTime_OnFixes_SameTimestamp(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	sameTime := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-same-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    sameTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-same-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    sameTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(sameTime) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v", transitionTime, sameTime)
+	}
+}
+
+func TestGetStateTransitionTime_OnFixes_MultipleThreadsWithBackAndForth(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	t1Start := time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC)
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    t1Start,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       3,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       4,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       5,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       6,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 13, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       7,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 14, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetStateTransitionTime(db, mr, StateOnFixes)
+	if transitionTime == nil {
+		t.Fatal("GetStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(t1Start) {
+		t.Errorf("GetStateTransitionTime() = %v, want %v", transitionTime, t1Start)
+	}
+}
+
+// ============================================================================
+// GetUserStateTransitionTime Tests
+// ============================================================================
+
+// TestGetUserStateTransitionTime_ReviewerWaiting tests the scenario where
+// a reviewer is waiting for author response on a thread.
+// Thread 1: R@8am → A@9am → R@10am → A@11am (author is last)
+// Thread 2: R@12pm → A@1pm → R@2pm (reviewer is last)
+// Expected: Reviewer waiting since 2pm (Thread 2 only)
+func TestGetUserStateTransitionTime_ReviewerWaiting(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	// Thread 1: R@8am → A@9am → R@10am → A@11am (author is last)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       3,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       4,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	// Thread 2: R@12pm → A@1pm → R@2pm (reviewer is last)
+	expectedTime := time.Date(2024, 1, 15, 14, 0, 0, 0, time.UTC) // 2pm
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       5,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       6,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 13, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       7,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    expectedTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetUserStateTransitionTime(db, mr, reviewer.ID)
+	if transitionTime == nil {
+		t.Fatal("GetUserStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(expectedTime) {
+		t.Errorf("GetUserStateTransitionTime() = %v, want %v", transitionTime, expectedTime)
+	}
+}
+
+// TestGetUserStateTransitionTime_ReviewerNeedsAction tests when reviewer needs action
+// because author replied to their thread.
+// Thread 1: R@8am → A@9am (author is last, thread unresolved)
+// Expected: Reviewer needs action since 9am (when author replied)
+func TestGetUserStateTransitionTime_ReviewerNeedsAction(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	expectedTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC) // 9am
+
+	// Thread 1: R@8am → A@9am (author is last, thread unresolved)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    expectedTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetUserStateTransitionTime(db, mr, reviewer.ID)
+	if transitionTime == nil {
+		t.Fatal("GetUserStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(expectedTime) {
+		t.Errorf("GetUserStateTransitionTime() = %v, want %v", transitionTime, expectedTime)
+	}
+}
+
+// TestGetUserStateTransitionTime_MultipleWaitingThreads tests when reviewer
+// is waiting on multiple threads - should return earliest.
+// Thread 1: R@8am (reviewer is last)
+// Thread 2: R@10am (reviewer is last)
+// Expected: 8am (earliest)
+func TestGetUserStateTransitionTime_MultipleWaitingThreads(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	expectedTime := time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC) // 8am (earliest)
+
+	// Thread 1: R@8am (reviewer is last)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    expectedTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	// Thread 2: R@10am (reviewer is last)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetUserStateTransitionTime(db, mr, reviewer.ID)
+	if transitionTime == nil {
+		t.Fatal("GetUserStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(expectedTime) {
+		t.Errorf("GetUserStateTransitionTime() = %v, want %v", transitionTime, expectedTime)
+	}
+}
+
+// TestGetUserStateTransitionTime_Author tests author state transition time.
+// Thread 1: R@8am → A@9am → R@10am (reviewer is last, awaiting author)
+// Expected: Author needs to respond since 10am (when reviewer replied)
+func TestGetUserStateTransitionTime_Author(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	expectedTime := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC) // 10am
+
+	// Thread 1: R@8am → A@9am → R@10am (reviewer is last, awaiting author)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       3,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    expectedTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetUserStateTransitionTime(db, mr, author.ID)
+	if transitionTime == nil {
+		t.Fatal("GetUserStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(expectedTime) {
+		t.Errorf("GetUserStateTransitionTime() = %v, want %v", transitionTime, expectedTime)
+	}
+}
+
+// TestGetUserStateTransitionTime_AuthorNoThreadsAwaiting tests when author
+// has responded to all threads - should return on_review transition time.
+func TestGetUserStateTransitionTime_AuthorNoThreadsAwaiting(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	createdAt := time.Date(2024, 1, 15, 7, 0, 0, 0, time.UTC)
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID, GitlabCreatedAt: &createdAt}
+	db.Create(mr)
+
+	// Thread 1: R@8am → A@9am (author is last - no action needed from author)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetUserStateTransitionTime(db, mr, author.ID)
+	// Author is on_review, should get on_review transition time (MR created time as fallback)
+	if transitionTime == nil {
+		t.Fatal("GetUserStateTransitionTime() = nil, want non-nil")
+	}
+	// The exact time depends on on_review logic, but it should not be nil
+}
+
+// TestGetUserStateTransitionTime_ReviewerAssigned tests when reviewer was
+// just assigned and has no threads yet.
+func TestGetUserStateTransitionTime_ReviewerAssigned(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	createdAt := time.Date(2024, 1, 15, 7, 0, 0, 0, time.UTC)
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID, GitlabCreatedAt: &createdAt}
+	db.Create(mr)
+
+	assignedTime := time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC)
+	db.Create(&models.MRAction{
+		MergeRequestID: mr.ID,
+		ActionType:     models.ActionReviewerAssigned,
+		TargetUserID:   &reviewer.ID,
+		Timestamp:      assignedTime,
+	})
+
+	transitionTime := GetUserStateTransitionTime(db, mr, reviewer.ID)
+	if transitionTime == nil {
+		t.Fatal("GetUserStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(assignedTime) {
+		t.Errorf("GetUserStateTransitionTime() = %v, want %v", transitionTime, assignedTime)
+	}
+}
+
+// TestGetUserStateTransitionTime_ReviewerWaitingAfterAuthorReply tests cycle:
+// R creates thread → A replies → R replies again
+// Should return when reviewer replied after author (the wait start time)
+func TestGetUserStateTransitionTime_ReviewerWaitingAfterAuthorReply(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	reviewerReplyTime := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC) // When reviewer replied after author
+
+	// Thread: R@8am → A@9am → R@10am (reviewer waiting since 10am)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           author.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC),
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     false,
+	})
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       3,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         false,
+		Resolved:           false,
+		GitlabCreatedAt:    reviewerReplyTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetUserStateTransitionTime(db, mr, reviewer.ID)
+	if transitionTime == nil {
+		t.Fatal("GetUserStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(reviewerReplyTime) {
+		t.Errorf("GetUserStateTransitionTime() = %v, want %v", transitionTime, reviewerReplyTime)
+	}
+}
+
+// TestGetUserStateTransitionTime_AuthorMultipleThreads tests author with multiple
+// threads where reviewer is last - should return earliest awaiting time.
+func TestGetUserStateTransitionTime_AuthorMultipleThreads(t *testing.T) {
+	db := setupTestDB(t)
+
+	reviewer := &models.User{GitlabID: 100, Username: "reviewer"}
+	db.Create(reviewer)
+	author := &models.User{GitlabID: 200, Username: "author"}
+	db.Create(author)
+
+	mr := &models.MergeRequest{State: "opened", AuthorID: author.ID}
+	db.Create(mr)
+
+	earlierTime := time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC)
+	laterTime := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	// Thread 1: R@8am (reviewer is last, awaiting author since 8am)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       1,
+		GitlabDiscussionID: "disc-1",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    earlierTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	// Thread 2: R@10am (reviewer is last, awaiting author since 10am)
+	db.Create(&models.MRComment{
+		MergeRequestID:     mr.ID,
+		GitlabNoteID:       2,
+		GitlabDiscussionID: "disc-2",
+		AuthorID:           reviewer.ID,
+		Resolvable:         true,
+		Resolved:           false,
+		GitlabCreatedAt:    laterTime,
+		ThreadStarterID:    &reviewer.ID,
+		IsLastInThread:     true,
+	})
+
+	transitionTime := GetUserStateTransitionTime(db, mr, author.ID)
+	if transitionTime == nil {
+		t.Fatal("GetUserStateTransitionTime() = nil, want non-nil")
+	}
+	if !transitionTime.Equal(earlierTime) {
+		t.Errorf("GetUserStateTransitionTime() = %v, want %v (earliest)", transitionTime, earlierTime)
+	}
+}
+

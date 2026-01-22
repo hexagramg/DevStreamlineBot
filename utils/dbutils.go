@@ -205,6 +205,8 @@ func hasReleaseLabelFromCache(labels []models.Label, releaseLabels map[string]st
 //
 // Reviewer needs action when ALL their threads are "handled" - meaning they have NO
 // unresolved threads where they commented last (waiting for author to respond).
+//
+// SLA times are calculated per-user using GetUserStateTransitionTime, not global MR state.
 func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs []DigestMR, authorOnReviewMRs []DigestMR, err error) {
 	var reviewerMRs []models.MergeRequest
 	err = db.
@@ -248,17 +250,19 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		}
 
 		stateInfo := GetStateInfo(db, &mr)
+		userStateSince := GetUserStateTransitionTime(db, &mr, userID)
+		workingTime := calculateUserWorkingTime(db, &mr, userStateSince)
 
 		blocked := IsMRBlocked(db, &mr)
 		sla, _ := GetRepositorySLA(db, mr.RepositoryID)
 		threshold := sla.ReviewDuration.ToDuration()
-		exceeded, percentage := CheckSLAStatus(stateInfo.WorkingTime, threshold)
+		exceeded, percentage := CheckSLAStatus(workingTime, threshold)
 
 		reviewMRs = append(reviewMRs, DigestMR{
 			MR:            mr,
 			State:         stateInfo.State,
-			StateSince:    stateInfo.StateSince,
-			TimeInState:   stateInfo.WorkingTime,
+			StateSince:    userStateSince,
+			TimeInState:   workingTime,
 			SLAExceeded:   exceeded,
 			SLAPercentage: percentage,
 			Blocked:       blocked,
@@ -271,31 +275,34 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		}
 
 		stateInfo := GetStateInfo(db, &mr)
+		userStateSince := GetUserStateTransitionTime(db, &mr, userID)
+		workingTime := calculateUserWorkingTime(db, &mr, userStateSince)
+
 		blocked := IsMRBlocked(db, &mr)
 		sla, _ := GetRepositorySLA(db, mr.RepositoryID)
 
 		if stateInfo.State == StateOnFixes || stateInfo.State == StateDraft {
 			threshold := sla.FixesDuration.ToDuration()
-			exceeded, percentage := CheckSLAStatus(stateInfo.WorkingTime, threshold)
+			exceeded, percentage := CheckSLAStatus(workingTime, threshold)
 
 			fixesMRs = append(fixesMRs, DigestMR{
 				MR:            mr,
 				State:         stateInfo.State,
-				StateSince:    stateInfo.StateSince,
-				TimeInState:   stateInfo.WorkingTime,
+				StateSince:    userStateSince,
+				TimeInState:   workingTime,
 				SLAExceeded:   exceeded,
 				SLAPercentage: percentage,
 				Blocked:       blocked,
 			})
 		} else if stateInfo.State == StateOnReview {
 			threshold := sla.ReviewDuration.ToDuration()
-			exceeded, percentage := CheckSLAStatus(stateInfo.WorkingTime, threshold)
+			exceeded, percentage := CheckSLAStatus(workingTime, threshold)
 
 			authorOnReviewMRs = append(authorOnReviewMRs, DigestMR{
 				MR:            mr,
 				State:         stateInfo.State,
-				StateSince:    stateInfo.StateSince,
-				TimeInState:   stateInfo.WorkingTime,
+				StateSince:    userStateSince,
+				TimeInState:   workingTime,
 				SLAExceeded:   exceeded,
 				SLAPercentage: percentage,
 				Blocked:       blocked,
@@ -304,6 +311,25 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 	}
 
 	return reviewMRs, fixesMRs, authorOnReviewMRs, nil
+}
+
+// calculateUserWorkingTime calculates working time from stateSince to now,
+// excluding weekends, holidays, and blocked time.
+func calculateUserWorkingTime(db *gorm.DB, mr *models.MergeRequest, stateSince *time.Time) time.Duration {
+	if stateSince == nil {
+		return 0
+	}
+
+	now := time.Now()
+	workingTime := CalculateWorkingTime(db, mr.RepositoryID, *stateSince, now)
+
+	blockedTime := CalculateBlockedTime(db, mr.ID, mr.RepositoryID, *stateSince, now)
+	workingTime -= blockedTime
+	if workingTime < 0 {
+		workingTime = 0
+	}
+
+	return workingTime
 }
 
 // GetActiveReviewers returns active reviewers for each MR.
