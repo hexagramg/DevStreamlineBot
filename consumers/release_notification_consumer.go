@@ -90,7 +90,7 @@ func (c *ReleaseNotificationConsumer) processNewReleaseAction(action models.MRAc
 
 	releaseDate := time.Now().Format("02.01.2006")
 	description := convertToVKMarkdown(mr.Description)
-	message := fmt.Sprintf("Новый релиз %s %s:\n\n%s", repo.Name, releaseDate, description)
+	message := fmt.Sprintf("Новый релиз %s %s: [Release MR](%s)\n\n%s", repo.Name, releaseDate, mr.WebURL, description)
 
 	for _, sub := range subs {
 		msg := c.vkBot.NewMarkdownMessage(sub.Chat.ChatID, message)
