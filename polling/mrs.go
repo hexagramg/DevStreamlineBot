@@ -142,7 +142,7 @@ func buildJiraPrefixPattern(db *gorm.DB, repoID uint) *regexp.Regexp {
 	for _, p := range prefixes {
 		prefixStrs = append(prefixStrs, regexp.QuoteMeta(p.Prefix))
 	}
-	pattern := fmt.Sprintf(`(%s)-\d+`, strings.Join(prefixStrs, "|"))
+	pattern := fmt.Sprintf(`(?i)(%s)-\d+`, strings.Join(prefixStrs, "|"))
 	return regexp.MustCompile(pattern)
 }
 

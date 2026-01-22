@@ -122,6 +122,14 @@ func TestStripJiraPrefix_EmptyJiraTaskID(t *testing.T) {
 	}
 }
 
+func TestStripJiraPrefix_CaseInsensitive(t *testing.T) {
+	title := "intdev-123: Add new feature"
+	result := stripJiraPrefix(title, "INTDEV-123")
+	if result != "Add new feature" {
+		t.Errorf("expected 'Add new feature', got '%s'", result)
+	}
+}
+
 func TestBuildReleaseMRDescription_WithJiraTask(t *testing.T) {
 	consumer := &AutoReleaseConsumer{jiraBaseURL: "https://jira.example.com"}
 	mrs := []includedMR{

@@ -381,10 +381,12 @@ func stripJiraPrefix(title, jiraTaskID string) string {
 	if jiraTaskID == "" {
 		return title
 	}
-	prefixes := []string{jiraTaskID + ": ", jiraTaskID + " "}
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(title, prefix) {
-			return strings.TrimPrefix(title, prefix)
+	lowerTitle := strings.ToLower(title)
+	lowerID := strings.ToLower(jiraTaskID)
+	for _, sep := range []string{": ", " "} {
+		prefix := lowerID + sep
+		if strings.HasPrefix(lowerTitle, prefix) {
+			return title[len(prefix):]
 		}
 	}
 	return title

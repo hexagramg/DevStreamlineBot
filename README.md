@@ -8,8 +8,13 @@ A bot that automates code review assignments in GitLab. It integrates with VK Te
 - **Label-based reviewers**: Configure different reviewer pools for specific labels (e.g., backend team for `backend` label)
 - **SLA tracking**: Track review and fix times with configurable SLAs, excluding weekends and holidays
 - **Review digests**: Send periodic summaries of pending reviews to chat
+- **Personal daily digests**: Get personalized daily action items sent to DMs (weekdays only, skips holidays)
 - **Vacation management**: Mark users as on vacation to exclude them from reviewer selection
 - **Auto-release branches**: Automatically create release branches, retarget MRs, and maintain release MR descriptions with included changes
+- **Jira integration**: Extract Jira task IDs from branch names or MR titles for linking
+- **Release-ready labels**: Mark MRs as ready for release with dedicated labels
+- **Release notifications**: Subscribe chats to get notified when MRs are marked release-ready
+- **DM notifications**: Receive personal notifications for MR state changes, approvals, and reviewer updates
 
 ## Getting Started
 
@@ -102,13 +107,14 @@ Add the bot to a VK Teams chat and use these commands:
 
 | Command | Description |
 |---------|-------------|
-| `/subscribe <repo_id>` | Subscribe chat to GitLab project notifications |
+| `/subscribe <repo_id> [--force]` | Subscribe chat to GitLab project notifications. Use `--force` to take over a repo from another chat |
 | `/unsubscribe <repo_id>` | Unsubscribe from a project |
 | `/reviewers user1,user2` | Set default reviewer pool for subscribed repos |
 | `/reviewers` | Clear default reviewers |
 | `/actions [username]` | List pending actions (reviews, fixes, author MRs) for a user |
 | `/send_digest` | Send immediate review digest to chat |
 | `/daily_digest [+/-N]` | Toggle personal daily digest at 10:00 in your timezone (DM only) |
+| `/subscribers` | List all users subscribed to daily digests |
 | `/get_mr_info <path!iid>` | Get MR details (e.g., `/get_mr_info group/project!123`) |
 
 ### Reviewer Management
@@ -138,6 +144,8 @@ Add the bot to a VK Teams chat and use these commands:
 |---------|-------------|
 | `/add_block_label <label> [#color]` | Add block label(s) to repos (default: #dc143c). MRs with block labels are excluded from auto-retargeting |
 | `/add_release_label <label> [#color]` | Add release label to repos (default: #808080). Required for auto-release branches |
+| `/add_release_ready_label <label> [#color]` | Add release-ready label (default: #FFD700). Marks MRs as ready for release |
+| `/add_jira_prefix <PREFIX>` | Configure Jira project prefix for task ID extraction from branch names/MR titles |
 | `/ensure_label <label> <#color>` | Create label in GitLab if it doesn't exist |
 
 ### Release Management
@@ -148,8 +156,10 @@ Add the bot to a VK Teams chat and use these commands:
 | `/auto_release_branch` | Disable auto-release branches for subscribed repos |
 | `/release_managers user1,user2` | Set release managers for subscribed repos |
 | `/release_managers` | List current release managers |
+| `/release_subscribe <repo_id>` | Subscribe chat to release notifications (notified when MRs are marked release-ready) |
+| `/release_unsubscribe <repo_id>` | Unsubscribe from release notifications |
 
-**Note**: Auto-release branch functionality requires a release label to be configured (`/add_release_label`).
+**Note**: Auto-release branch functionality requires a release label to be configured (`/add_release_label`). Release notifications require a release-ready label (`/add_release_ready_label`).
 
 ## How It Works
 
@@ -170,6 +180,13 @@ The bot tracks time spent in each MR state:
 
 Working time excludes weekends and configured holidays.
 
+### DM Notifications
+
+Users receive personal DM notifications for:
+- **State changes**: When MRs they're involved in move between states (review ↔ fixes)
+- **Fully approved**: When all assigned reviewers have approved an MR
+- **Reviewer removal**: When removed as a reviewer from an MR
+
 ### Auto-Release Branches
 
 When enabled, the bot automates release branch management:
@@ -189,3 +206,12 @@ When enabled, the bot automates release branch management:
 **Requirements**:
 - Repository must have a release label configured (used to identify release MRs)
 - Optional: Configure block labels to prevent specific MRs from being retargeted
+
+### Release-Ready Workflow
+
+For teams using a release-ready workflow:
+
+1. **Configure release-ready label**: Use `/add_release_ready_label` to set up a label for marking MRs ready for release
+2. **Subscribe to notifications**: Use `/release_subscribe` in chats that should receive release notifications
+3. **Mark MRs ready**: When an MR is ready for release, add the release-ready label in GitLab
+4. **Receive notifications**: Subscribed chats are notified when MRs are marked release-ready
