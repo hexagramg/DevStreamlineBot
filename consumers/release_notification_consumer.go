@@ -89,10 +89,11 @@ func (c *ReleaseNotificationConsumer) processNewReleaseAction(action models.MRAc
 	}
 
 	releaseDate := time.Now().Format("02.01.2006")
-	message := fmt.Sprintf("Новый релиз %s %s:\n\n%s", repo.Name, releaseDate, mr.Description)
+	description := convertToVKMarkdown(mr.Description)
+	message := fmt.Sprintf("Новый релиз %s %s:\n\n%s", repo.Name, releaseDate, description)
 
 	for _, sub := range subs {
-		msg := c.vkBot.NewTextMessage(sub.Chat.ChatID, message)
+		msg := c.vkBot.NewMarkdownMessage(sub.Chat.ChatID, message)
 		if err := msg.Send(); err != nil {
 			log.Printf("failed to send release notification to chat %s: %v", sub.Chat.ChatID, err)
 		}
@@ -199,7 +200,7 @@ func (c *ReleaseNotificationConsumer) processRepoDescriptionChanges(repoID uint)
 	message := fmt.Sprintf("Добавлена задача в релиз %s\n%s", repo.Name, strings.Join(newEntries, "\n"))
 
 	for _, sub := range subs {
-		msg := c.vkBot.NewTextMessage(sub.Chat.ChatID, message)
+		msg := c.vkBot.NewMarkdownMessage(sub.Chat.ChatID, message)
 		if err := msg.Send(); err != nil {
 			log.Printf("failed to send release update notification to chat %s: %v", sub.Chat.ChatID, err)
 		}
@@ -212,6 +213,31 @@ func (c *ReleaseNotificationConsumer) processRepoDescriptionChanges(repoID uint)
 	}
 
 	log.Printf("Sent release update notification for MR %d (%s) with %d new entries", releaseMR.ID, repo.Name, len(newEntries))
+}
+
+func convertToVKMarkdown(text string) string {
+	lines := strings.Split(text, "\n")
+	var result []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "# ") {
+			line = strings.TrimPrefix(trimmed, "# ")
+		} else if strings.HasPrefix(trimmed, "## ") {
+			line = strings.TrimPrefix(trimmed, "## ")
+		} else if strings.HasPrefix(trimmed, "### ") {
+			line = strings.TrimPrefix(trimmed, "### ")
+		}
+
+		result = append(result, line)
+	}
+
+	return strings.Join(result, "\n")
 }
 
 func extractNewEntries(oldDesc, newDesc string) []string {

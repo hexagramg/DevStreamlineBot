@@ -10,6 +10,7 @@ type VKBotMessage interface {
 // VKBot abstracts VK Teams bot operations for testing.
 type VKBot interface {
 	NewTextMessage(chatID string, text string) VKBotMessage
+	NewMarkdownMessage(chatID string, text string) VKBotMessage
 }
 
 // RealVKBot wraps *botgolang.Bot to implement VKBot interface.
@@ -20,4 +21,10 @@ type RealVKBot struct {
 // NewTextMessage creates a new text message.
 func (r *RealVKBot) NewTextMessage(chatID string, text string) VKBotMessage {
 	return r.Bot.NewTextMessage(chatID, text)
+}
+
+func (r *RealVKBot) NewMarkdownMessage(chatID string, text string) VKBotMessage {
+	msg := r.Bot.NewTextMessage(chatID, text)
+	msg.ParseMode = botgolang.ParseModeMarkdownV2
+	return msg
 }

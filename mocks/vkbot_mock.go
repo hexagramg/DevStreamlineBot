@@ -4,10 +4,11 @@ import "devstreamlinebot/interfaces"
 
 // MockVKMessage represents a mock VK Teams message.
 type MockVKMessage struct {
-	ChatID  string
-	Text    string
-	Sent    bool
-	SendErr error
+	ChatID    string
+	Text      string
+	ParseMode string
+	Sent      bool
+	SendErr   error
 }
 
 // Send simulates sending a message.
@@ -38,6 +39,16 @@ func (m *MockVKBot) NewTextMessage(chatID string, text string) interfaces.VKBotM
 	msg := &MockVKMessage{
 		ChatID: chatID,
 		Text:   text,
+	}
+	m.Messages = append(m.Messages, msg)
+	return msg
+}
+
+func (m *MockVKBot) NewMarkdownMessage(chatID string, text string) interfaces.VKBotMessage {
+	msg := &MockVKMessage{
+		ChatID:    chatID,
+		Text:      text,
+		ParseMode: "MarkdownV2",
 	}
 	m.Messages = append(m.Messages, msg)
 	return msg
