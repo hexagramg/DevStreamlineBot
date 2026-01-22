@@ -1157,7 +1157,13 @@ func (c *VKCommandConsumer) handleSubscribersCommand(msg *botgolang.Message) {
 	var lines []string
 	for _, pref := range prefs {
 		tzStr := formatTimezone(pref.TimezoneOffset)
-		lines = append(lines, fmt.Sprintf("%s (%s)", pref.VKUser.Nick, tzStr))
+		displayName := strings.TrimSpace(pref.VKUser.FirstName + " " + pref.VKUser.LastName)
+		if displayName != "" {
+			displayName = fmt.Sprintf("%s (%s)", displayName, pref.VKUser.UserID)
+		} else {
+			displayName = pref.VKUser.UserID
+		}
+		lines = append(lines, fmt.Sprintf("%s (%s)", displayName, tzStr))
 	}
 	c.sendReply(msg, "Daily digest subscribers:\n"+strings.Join(lines, "\n"))
 }
