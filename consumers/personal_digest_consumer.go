@@ -50,21 +50,50 @@ func (c *PersonalDigestConsumer) processPreference(pref models.DailyDigestPrefer
 		return
 	}
 
-	userToday := time.Date(userTime.Year(), userTime.Month(), userTime.Day(), 0, 0, 0, 0, time.UTC)
-	if pref.LastSentAt != nil {
-		lastSentUserTime := pref.LastSentAt.UTC().Add(time.Duration(pref.TimezoneOffset) * time.Hour)
-		lastSentDay := time.Date(lastSentUserTime.Year(), lastSentUserTime.Month(), lastSentUserTime.Day(), 0, 0, 0, 0, time.UTC)
-		if !lastSentDay.Before(userToday) {
-		}
-	}
-
 	if userTime.Weekday() == time.Saturday || userTime.Weekday() == time.Sunday {
 		return
 	}
 
+	var shouldSend bool
+	var lockedPref models.DailyDigestPreference
+
+	err := c.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Preload("VKUser").
+			Where("id = ?", pref.ID).
+			First(&lockedPref).Error; err != nil {
+			return err
+		}
+
+		userToday := time.Date(userTime.Year(), userTime.Month(), userTime.Day(), 0, 0, 0, 0, time.UTC)
+		if lockedPref.LastSentAt != nil {
+			lastSentUserTime := lockedPref.LastSentAt.UTC().Add(time.Duration(lockedPref.TimezoneOffset) * time.Hour)
+			lastSentDay := time.Date(lastSentUserTime.Year(), lastSentUserTime.Month(), lastSentUserTime.Day(), 0, 0, 0, 0, time.UTC)
+			if !lastSentDay.Before(userToday) {
+				return nil
+			}
+		}
+
+		now := time.Now()
+		if err := tx.Model(&lockedPref).Update("last_sent_at", now).Error; err != nil {
+			return err
+		}
+
+		shouldSend = true
+		return nil
+	})
+
+	if err != nil {
+		log.Printf("failed to check/update LastSentAt for preference %d: %v", pref.ID, err)
+		return
+	}
+
+	if !shouldSend {
+		return
+	}
+
 	var gitlabUser models.User
-	if err := c.db.Where("email = ?", pref.VKUser.UserID).First(&gitlabUser).Error; err != nil {
-		log.Printf("failed to find GitLab user for VK user %s: %v", pref.VKUser.UserID, err)
+	if err := c.db.Where("email = ?", lockedPref.VKUser.UserID).First(&gitlabUser).Error; err != nil {
+		log.Printf("failed to find GitLab user for VK user %s: %v", lockedPref.VKUser.UserID, err)
 		return
 	}
 
@@ -84,16 +113,10 @@ func (c *PersonalDigestConsumer) processPreference(pref models.DailyDigestPrefer
 	}
 
 	text := utils.BuildUserActionsDigest(c.db, reviewMRs, fixesMRs, authorOnReviewMRs, releaseMRs, gitlabUser.Username)
-	msg := c.vkBot.NewTextMessage(pref.DMChatID, text)
+	msg := c.vkBot.NewTextMessage(lockedPref.DMChatID, text)
 	if err := msg.Send(); err != nil {
-		log.Printf("failed to send personal digest to %s: %v", pref.VKUser.UserID, err)
+		log.Printf("failed to send personal digest to %s: %v", lockedPref.VKUser.UserID, err)
 		return
-	}
-
-	now := time.Now()
-	pref.LastSentAt = &now
-	if err := c.db.Save(&pref).Error; err != nil {
-		log.Printf("failed to update LastSentAt for preference %d: %v", pref.ID, err)
 	}
 }
 

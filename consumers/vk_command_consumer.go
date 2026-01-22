@@ -160,99 +160,164 @@ func (c *VKCommandConsumer) handleSubscribeCommand(msg *botgolang.Message, from 
 		return
 	}
 
-	var existingSub models.RepositorySubscription
-	if err := c.db.Where("repository_id = ? AND chat_id = ?", repo.ID, chat.ID).First(&existingSub).Error; err == nil {
-		c.sendReply(msg, fmt.Sprintf("This chat is already subscribed to repository: %s", repo.Name))
-		return
-	}
-
-	var otherSub models.RepositorySubscription
-	takenOver := false
+	var successMsg string
+	var takenOver bool
 	var oldChatTitle string
-	if err := c.db.Preload("Chat").Where("repository_id = ? AND chat_id != ?", repo.ID, chat.ID).First(&otherSub).Error; err == nil {
-		if !forceFlag {
-			c.sendReply(msg, fmt.Sprintf("Repository %s is already subscribed by chat '%s'. Use '/subscribe %d --force' to take over.",
-				repo.Name, otherSub.Chat.Title, repoID))
+	var settingsCopied bool
+
+	err = c.db.Transaction(func(tx *gorm.DB) error {
+		var existingSub models.RepositorySubscription
+		if err := tx.Where("repository_id = ? AND chat_id = ?", repo.ID, chat.ID).First(&existingSub).Error; err == nil {
+			return fmt.Errorf("already_subscribed")
+		}
+
+		var otherSub models.RepositorySubscription
+		if err := tx.Preload("Chat").Where("repository_id = ? AND chat_id != ?", repo.ID, chat.ID).First(&otherSub).Error; err == nil {
+			if !forceFlag {
+				return fmt.Errorf("owned_by_other:%s", otherSub.Chat.Title)
+			}
+			oldChatTitle = otherSub.Chat.Title
+			takenOver = true
+
+			if err := tx.Delete(&otherSub).Error; err != nil {
+				return fmt.Errorf("deleting old subscription: %w", err)
+			}
+			if err := tx.Where("repository_id = ?", repo.ID).Delete(&models.PossibleReviewer{}).Error; err != nil {
+				return fmt.Errorf("deleting possible reviewers: %w", err)
+			}
+			if err := tx.Where("repository_id = ?", repo.ID).Delete(&models.LabelReviewer{}).Error; err != nil {
+				return fmt.Errorf("deleting label reviewers: %w", err)
+			}
+			if err := tx.Where("repository_id = ?", repo.ID).Delete(&models.RepositorySLA{}).Error; err != nil {
+				return fmt.Errorf("deleting SLA: %w", err)
+			}
+			if err := tx.Where("repository_id = ?", repo.ID).Delete(&models.Holiday{}).Error; err != nil {
+				return fmt.Errorf("deleting holidays: %w", err)
+			}
+			if err := tx.Where("repository_id = ?", repo.ID).Delete(&models.BlockLabel{}).Error; err != nil {
+				return fmt.Errorf("deleting block labels: %w", err)
+			}
+			if err := tx.Where("repository_id = ?", repo.ID).Delete(&models.AutoReleaseBranchConfig{}).Error; err != nil {
+				return fmt.Errorf("deleting auto release config: %w", err)
+			}
+			if err := tx.Where("repository_id = ?", repo.ID).Delete(&models.ReleaseReadyLabel{}).Error; err != nil {
+				return fmt.Errorf("deleting release ready labels: %w", err)
+			}
+			if err := tx.Where("repository_id = ?", repo.ID).Delete(&models.ReleaseManager{}).Error; err != nil {
+				return fmt.Errorf("deleting release managers: %w", err)
+			}
+		}
+
+		subscription := models.RepositorySubscription{
+			RepositoryID: repo.ID,
+			ChatID:       chat.ID,
+			VKUserID:     user.ID,
+			SubscribedAt: time.Now(),
+		}
+
+		if err := tx.Create(&subscription).Error; err != nil {
+			return fmt.Errorf("creating subscription: %w", err)
+		}
+
+		var existingSubs []models.RepositorySubscription
+		tx.Where("chat_id = ? AND repository_id != ?", chat.ID, repo.ID).Find(&existingSubs)
+
+		if len(existingSubs) > 0 {
+			sourceRepoID := existingSubs[0].RepositoryID
+			settingsCopied = true
+
+			var existingReviewers []models.PossibleReviewer
+			tx.Where("repository_id = ?", sourceRepoID).Find(&existingReviewers)
+			for _, r := range existingReviewers {
+				if err := tx.Create(&models.PossibleReviewer{RepositoryID: repo.ID, UserID: r.UserID}).Error; err != nil {
+					return fmt.Errorf("copying possible reviewer: %w", err)
+				}
+			}
+
+			var existingLabelReviewers []models.LabelReviewer
+			tx.Where("repository_id = ?", sourceRepoID).Find(&existingLabelReviewers)
+			for _, lr := range existingLabelReviewers {
+				if err := tx.Create(&models.LabelReviewer{RepositoryID: repo.ID, LabelName: lr.LabelName, UserID: lr.UserID}).Error; err != nil {
+					return fmt.Errorf("copying label reviewer: %w", err)
+				}
+			}
+
+			var existingSLA models.RepositorySLA
+			if err := tx.Where("repository_id = ?", sourceRepoID).First(&existingSLA).Error; err == nil {
+				if err := tx.Create(&models.RepositorySLA{
+					RepositoryID:   repo.ID,
+					ReviewDuration: existingSLA.ReviewDuration,
+					FixesDuration:  existingSLA.FixesDuration,
+					AssignCount:    existingSLA.AssignCount,
+				}).Error; err != nil {
+					return fmt.Errorf("copying SLA: %w", err)
+				}
+			}
+
+			var existingHolidays []models.Holiday
+			tx.Where("repository_id = ?", sourceRepoID).Find(&existingHolidays)
+			for _, h := range existingHolidays {
+				if err := tx.Create(&models.Holiday{RepositoryID: repo.ID, Date: h.Date}).Error; err != nil {
+					return fmt.Errorf("copying holiday: %w", err)
+				}
+			}
+
+			var existingBlockLabels []models.BlockLabel
+			tx.Where("repository_id = ?", sourceRepoID).Find(&existingBlockLabels)
+			for _, bl := range existingBlockLabels {
+				if err := tx.Create(&models.BlockLabel{RepositoryID: repo.ID, LabelName: bl.LabelName}).Error; err != nil {
+					return fmt.Errorf("copying block label: %w", err)
+				}
+			}
+
+			var existingAutoReleaseConfig models.AutoReleaseBranchConfig
+			if err := tx.Where("repository_id = ?", sourceRepoID).First(&existingAutoReleaseConfig).Error; err == nil {
+				if err := tx.Create(&models.AutoReleaseBranchConfig{
+					RepositoryID:        repo.ID,
+					ReleaseBranchPrefix: existingAutoReleaseConfig.ReleaseBranchPrefix,
+					DevBranchName:       existingAutoReleaseConfig.DevBranchName,
+				}).Error; err != nil {
+					return fmt.Errorf("copying auto release config: %w", err)
+				}
+			}
+
+			var existingReleaseReadyLabels []models.ReleaseReadyLabel
+			tx.Where("repository_id = ?", sourceRepoID).Find(&existingReleaseReadyLabels)
+			for _, rrl := range existingReleaseReadyLabels {
+				if err := tx.Create(&models.ReleaseReadyLabel{RepositoryID: repo.ID, LabelName: rrl.LabelName}).Error; err != nil {
+					return fmt.Errorf("copying release ready label: %w", err)
+				}
+			}
+
+			var existingReleaseManagers []models.ReleaseManager
+			tx.Where("repository_id = ?", sourceRepoID).Find(&existingReleaseManagers)
+			for _, rm := range existingReleaseManagers {
+				if err := tx.Create(&models.ReleaseManager{RepositoryID: repo.ID, UserID: rm.UserID}).Error; err != nil {
+					return fmt.Errorf("copying release manager: %w", err)
+				}
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		errStr := err.Error()
+		if errStr == "already_subscribed" {
+			c.sendReply(msg, fmt.Sprintf("This chat is already subscribed to repository: %s", repo.Name))
 			return
 		}
-		oldChatTitle = otherSub.Chat.Title
-		takenOver = true
-		c.db.Delete(&otherSub)
-
-		c.db.Where("repository_id = ?", repo.ID).Delete(&models.PossibleReviewer{})
-		c.db.Where("repository_id = ?", repo.ID).Delete(&models.LabelReviewer{})
-		c.db.Where("repository_id = ?", repo.ID).Delete(&models.RepositorySLA{})
-		c.db.Where("repository_id = ?", repo.ID).Delete(&models.Holiday{})
-		c.db.Where("repository_id = ?", repo.ID).Delete(&models.BlockLabel{})
-		c.db.Where("repository_id = ?", repo.ID).Delete(&models.AutoReleaseBranchConfig{})
-	}
-
-	subscription := models.RepositorySubscription{
-		RepositoryID: repo.ID,
-		ChatID:       chat.ID,
-		VKUserID:     user.ID,
-		SubscribedAt: time.Now(),
-	}
-
-	if err := c.db.Create(&subscription).Error; err != nil {
+		if strings.HasPrefix(errStr, "owned_by_other:") {
+			otherChatTitle := strings.TrimPrefix(errStr, "owned_by_other:")
+			c.sendReply(msg, fmt.Sprintf("Repository %s is already subscribed by chat '%s'. Use '/subscribe %d --force' to take over.",
+				repo.Name, otherChatTitle, repoID))
+			return
+		}
 		log.Printf("failed to create subscription: %v", err)
 		c.sendReply(msg, "Failed to create subscription. Please try again later.")
 		return
 	}
 
-	settingsCopied := false
-	var existingSubs []models.RepositorySubscription
-	c.db.Where("chat_id = ? AND repository_id != ?", chat.ID, repo.ID).Find(&existingSubs)
-
-	if len(existingSubs) > 0 {
-		sourceRepoID := existingSubs[0].RepositoryID
-		settingsCopied = true
-
-		var existingReviewers []models.PossibleReviewer
-		c.db.Where("repository_id = ?", sourceRepoID).Find(&existingReviewers)
-		for _, r := range existingReviewers {
-			c.db.Create(&models.PossibleReviewer{RepositoryID: repo.ID, UserID: r.UserID})
-		}
-
-		var existingLabelReviewers []models.LabelReviewer
-		c.db.Where("repository_id = ?", sourceRepoID).Find(&existingLabelReviewers)
-		for _, lr := range existingLabelReviewers {
-			c.db.Create(&models.LabelReviewer{RepositoryID: repo.ID, LabelName: lr.LabelName, UserID: lr.UserID})
-		}
-
-		var existingSLA models.RepositorySLA
-		if err := c.db.Where("repository_id = ?", sourceRepoID).First(&existingSLA).Error; err == nil {
-			c.db.Create(&models.RepositorySLA{
-				RepositoryID:   repo.ID,
-				ReviewDuration: existingSLA.ReviewDuration,
-				FixesDuration:  existingSLA.FixesDuration,
-				AssignCount:    existingSLA.AssignCount,
-			})
-		}
-
-		var existingHolidays []models.Holiday
-		c.db.Where("repository_id = ?", sourceRepoID).Find(&existingHolidays)
-		for _, h := range existingHolidays {
-			c.db.Create(&models.Holiday{RepositoryID: repo.ID, Date: h.Date})
-		}
-
-		var existingBlockLabels []models.BlockLabel
-		c.db.Where("repository_id = ?", sourceRepoID).Find(&existingBlockLabels)
-		for _, bl := range existingBlockLabels {
-			c.db.Create(&models.BlockLabel{RepositoryID: repo.ID, LabelName: bl.LabelName})
-		}
-
-		var existingAutoReleaseConfig models.AutoReleaseBranchConfig
-		if err := c.db.Where("repository_id = ?", sourceRepoID).First(&existingAutoReleaseConfig).Error; err == nil {
-			c.db.Create(&models.AutoReleaseBranchConfig{
-				RepositoryID:        repo.ID,
-				ReleaseBranchPrefix: existingAutoReleaseConfig.ReleaseBranchPrefix,
-				DevBranchName:       existingAutoReleaseConfig.DevBranchName,
-			})
-		}
-	}
-
-	var successMsg string
 	if takenOver {
 		if settingsCopied {
 			successMsg = fmt.Sprintf("Repository %s is now subscribed (taken over from '%s'). Settings copied from existing subscriptions.", repo.Name, oldChatTitle)

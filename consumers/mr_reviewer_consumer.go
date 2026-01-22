@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	botgolang "github.com/mail-ru-im/bot-golang"
@@ -16,6 +17,27 @@ import (
 	"devstreamlinebot/models"
 	"devstreamlinebot/utils"
 )
+
+type threadSafeRand struct {
+	mu  sync.Mutex
+	rnd *rand.Rand
+}
+
+var safeRand = &threadSafeRand{
+	rnd: rand.New(rand.NewSource(time.Now().UnixNano())),
+}
+
+func (r *threadSafeRand) Intn(n int) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rnd.Intn(n)
+}
+
+func (r *threadSafeRand) Float64() float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rnd.Float64()
+}
 
 type MRReviewerConsumer struct {
 	db        *gorm.DB
@@ -399,14 +421,14 @@ func (c *MRReviewerConsumer) pickReviewerFromPool(users []models.User, reviewCou
 	}
 
 	if totalWeight <= 0 {
-		return rand.Intn(len(users))
+		return safeRand.Intn(len(users))
 	}
 
 	for i := range weights {
 		weights[i] /= totalWeight
 	}
 
-	r := rand.Float64()
+	r := safeRand.Float64()
 	cumulativeWeight := 0.0
 
 	for i, weight := range weights {
@@ -416,7 +438,7 @@ func (c *MRReviewerConsumer) pickReviewerFromPool(users []models.User, reviewCou
 		}
 	}
 
-	return rand.Intn(len(users))
+	return safeRand.Intn(len(users))
 }
 
 // formatReviewerMentions uses batch query to avoid N+1 DB queries when looking up VKUsers.
