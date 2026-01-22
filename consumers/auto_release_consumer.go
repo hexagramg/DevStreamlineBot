@@ -15,16 +15,18 @@ import (
 )
 
 type AutoReleaseConsumer struct {
-	db        *gorm.DB
-	mrService interfaces.GitLabMergeRequestsService
-	brService interfaces.GitLabBranchesService
+	db          *gorm.DB
+	mrService   interfaces.GitLabMergeRequestsService
+	brService   interfaces.GitLabBranchesService
+	jiraBaseURL string
 }
 
-func NewAutoReleaseConsumer(db *gorm.DB, glClient *gitlab.Client) *AutoReleaseConsumer {
+func NewAutoReleaseConsumer(db *gorm.DB, glClient *gitlab.Client, jiraBaseURL string) *AutoReleaseConsumer {
 	return &AutoReleaseConsumer{
-		db:        db,
-		mrService: glClient.MergeRequests,
-		brService: glClient.Branches,
+		db:          db,
+		mrService:   glClient.MergeRequests,
+		brService:   glClient.Branches,
+		jiraBaseURL: jiraBaseURL,
 	}
 }
 
@@ -32,11 +34,13 @@ func NewAutoReleaseConsumerWithServices(
 	db *gorm.DB,
 	mrService interfaces.GitLabMergeRequestsService,
 	brService interfaces.GitLabBranchesService,
+	jiraBaseURL string,
 ) *AutoReleaseConsumer {
 	return &AutoReleaseConsumer{
-		db:        db,
-		mrService: mrService,
-		brService: brService,
+		db:          db,
+		mrService:   mrService,
+		brService:   brService,
+		jiraBaseURL: jiraBaseURL,
 	}
 }
 
@@ -275,10 +279,11 @@ func (c *AutoReleaseConsumer) updateReleaseMRDescription(config models.AutoRelea
 }
 
 type includedMR struct {
-	IID    int
-	Title  string
-	URL    string
-	Author string
+	IID        int
+	Title      string
+	URL        string
+	Author     string
+	JiraTaskID string
 }
 
 func (c *AutoReleaseConsumer) getMergeRequestCommits(projectID, mrIID int) ([]*gitlab.Commit, error) {
@@ -307,7 +312,7 @@ func (c *AutoReleaseConsumer) getMergeRequestCommits(projectID, mrIID int) ([]*g
 func (c *AutoReleaseConsumer) extractIncludedMRs(commits []*gitlab.Commit, projectID int) []includedMR {
 	mrRefRegex := regexp.MustCompile(`See merge request [^\s!]+!(\d+)`)
 
-	var included []includedMR
+	var iids []int
 	seenIIDs := make(map[int]bool)
 
 	for _, commit := range commits {
@@ -322,7 +327,17 @@ func (c *AutoReleaseConsumer) extractIncludedMRs(commits []*gitlab.Commit, proje
 			continue
 		}
 		seenIIDs[iid] = true
+		iids = append(iids, iid)
+	}
 
+	if len(iids) == 0 {
+		return nil
+	}
+
+	var included []includedMR
+	var gitlabIDs []int
+
+	for _, iid := range iids {
 		mr, _, err := c.mrService.GetMergeRequest(projectID, iid, nil)
 		if err != nil {
 			log.Printf("Failed to fetch MR !%d details: %v", iid, err)
@@ -334,6 +349,7 @@ func (c *AutoReleaseConsumer) extractIncludedMRs(commits []*gitlab.Commit, proje
 			authorUsername = mr.Author.Username
 		}
 
+		gitlabIDs = append(gitlabIDs, mr.ID)
 		included = append(included, includedMR{
 			IID:    iid,
 			Title:  mr.Title,
@@ -342,34 +358,68 @@ func (c *AutoReleaseConsumer) extractIncludedMRs(commits []*gitlab.Commit, proje
 		})
 	}
 
+	if len(gitlabIDs) > 0 {
+		var localMRs []models.MergeRequest
+		c.db.Where("gitlab_id IN ?", gitlabIDs).Find(&localMRs)
+
+		jiraTaskByGitlabID := make(map[int]string)
+		for _, lmr := range localMRs {
+			jiraTaskByGitlabID[lmr.GitlabID] = lmr.JiraTaskID
+		}
+
+		for i := range included {
+			if i < len(gitlabIDs) {
+				included[i].JiraTaskID = jiraTaskByGitlabID[gitlabIDs[i]]
+			}
+		}
+	}
+
 	return included
+}
+
+func stripJiraPrefix(title, jiraTaskID string) string {
+	if jiraTaskID == "" {
+		return title
+	}
+	prefixes := []string{jiraTaskID + ": ", jiraTaskID + " "}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(title, prefix) {
+			return strings.TrimPrefix(title, prefix)
+		}
+	}
+	return title
 }
 
 func (c *AutoReleaseConsumer) buildReleaseMRDescription(currentDesc string, includedMRs []includedMR) string {
 	const sectionHeader = "---\n## Included MRs"
 
-	existingIIDs := make(map[int]bool)
+	existingURLs := make(map[string]bool)
 	if idx := strings.Index(currentDesc, sectionHeader); idx != -1 {
 		existingSection := currentDesc[idx:]
-		iidRegex := regexp.MustCompile(`\[!(\d+)`)
-		matches := iidRegex.FindAllStringSubmatch(existingSection, -1)
+		urlRegex := regexp.MustCompile(`\]\((https?://[^\)]+/merge_requests/\d+)\)`)
+		matches := urlRegex.FindAllStringSubmatch(existingSection, -1)
 		for _, match := range matches {
 			if len(match) >= 2 {
-				iid := 0
-				fmt.Sscanf(match[1], "%d", &iid)
-				if iid > 0 {
-					existingIIDs[iid] = true
-				}
+				existingURLs[match[1]] = true
 			}
 		}
 	}
 
 	var newEntries []string
 	for _, mr := range includedMRs {
-		if existingIIDs[mr.IID] {
+		if existingURLs[mr.URL] {
 			continue
 		}
-		entry := fmt.Sprintf("- [!%d %s](%s) by @%s", mr.IID, mr.Title, mr.URL, mr.Author)
+
+		var entry string
+		if mr.JiraTaskID != "" && c.jiraBaseURL != "" {
+			jiraURL := c.jiraBaseURL + "/browse/" + mr.JiraTaskID
+			cleanTitle := stripJiraPrefix(mr.Title, mr.JiraTaskID)
+			entry = fmt.Sprintf("- [%s](%s) [%s](%s) by @%s",
+				mr.JiraTaskID, jiraURL, cleanTitle, mr.URL, mr.Author)
+		} else {
+			entry = fmt.Sprintf("- [%s](%s) by @%s", mr.Title, mr.URL, mr.Author)
+		}
 		newEntries = append(newEntries, entry)
 	}
 

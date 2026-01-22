@@ -6,10 +6,15 @@ import (
 	"github.com/spf13/viper"
 )
 
+type JiraConfig struct {
+	BaseURL string `mapstructure:"base_url"`
+}
+
 type Config struct {
 	Gitlab    GitlabConfig   `mapstructure:"gitlab"`
 	VK        VKConfig       `mapstructure:"vk"`
 	Database  DatabaseConfig `mapstructure:"database"`
+	Jira      JiraConfig     `mapstructure:"jira"`
 	StartTime string         `mapstructure:"start_time"` // Optional, format: YYYY-MM-DD
 }
 

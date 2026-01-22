@@ -145,6 +145,7 @@ type MergeRequest struct {
 	Squash                      bool
 	SquashOnMerge               bool
 	UserNotesCount              int
+	JiraTaskID                  string `gorm:"index"`
 	HasConflicts                bool
 	BlockingDiscussionsResolved bool
 
@@ -160,6 +161,9 @@ type MergeRequest struct {
 
 	// Last state for which DM notification was sent (for state change notifications)
 	LastNotifiedState string `gorm:"type:varchar(20)"`
+
+	// Last release MR description for which notification was sent
+	LastNotifiedDescription string `gorm:"type:text"`
 
 	Labels     []Label         `gorm:"many2many:merge_request_labels"`
 	References IssueReferences `gorm:"embedded;embeddedPrefix:references_"`
@@ -314,6 +318,22 @@ type AutoReleaseBranchConfig struct {
 	DevBranchName       string     `gorm:"not null"`
 }
 
+// ReleaseReadyLabel stores labels that mark MRs as ready for release.
+type ReleaseReadyLabel struct {
+	gorm.Model
+	RepositoryID uint       `gorm:"not null;uniqueIndex:idx_release_ready_label_unique,priority:1"`
+	Repository   Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	LabelName    string     `gorm:"not null;uniqueIndex:idx_release_ready_label_unique,priority:2"`
+}
+
+// JiraProjectPrefix stores Jira project prefixes per repository for task ID extraction.
+type JiraProjectPrefix struct {
+	gorm.Model
+	RepositoryID uint       `gorm:"not null;uniqueIndex:idx_jira_prefix_unique,priority:1"`
+	Repository   Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	Prefix       string     `gorm:"not null;uniqueIndex:idx_jira_prefix_unique,priority:2"`
+}
+
 type MRActionType string
 
 const (
@@ -326,9 +346,10 @@ const (
 	ActionDraftToggled      MRActionType = "draft_toggled"
 	ActionMerged            MRActionType = "merged"
 	ActionClosed            MRActionType = "closed"
-	ActionBlockLabelAdded   MRActionType = "block_label_added"
-	ActionBlockLabelRemoved MRActionType = "block_label_removed"
-	ActionFullyApproved     MRActionType = "fully_approved" // All reviewers have approved
+	ActionBlockLabelAdded        MRActionType = "block_label_added"
+	ActionBlockLabelRemoved      MRActionType = "block_label_removed"
+	ActionFullyApproved          MRActionType = "fully_approved"          // All reviewers have approved
+	ActionReleaseReadyLabelAdded MRActionType = "release_ready_label_added"
 )
 
 // MRAction records timestamped actions for MR timeline tracking.
@@ -378,4 +399,16 @@ type DailyDigestPreference struct {
 	Enabled        bool       `gorm:"default:false"` // Whether digest is enabled
 	TimezoneOffset int        `gorm:"default:3"`     // Hours from UTC (default +3)
 	LastSentAt     *time.Time // Track last send to avoid duplicates
+}
+
+// ReleaseSubscription links a VK Teams chat to a GitLab repository for release notifications.
+type ReleaseSubscription struct {
+	gorm.Model
+	RepositoryID uint       `gorm:"not null;uniqueIndex:idx_release_subscription_unique,priority:1"`
+	Repository   Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	ChatID       uint       `gorm:"not null;uniqueIndex:idx_release_subscription_unique,priority:2"`
+	Chat         Chat
+	VKUserID     uint `gorm:"not null"`
+	VKUser       VKUser
+	SubscribedAt time.Time `gorm:"not null"`
 }

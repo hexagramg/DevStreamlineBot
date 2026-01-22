@@ -54,39 +54,148 @@ func TestBuildReleaseMRDescription_EmptyDescription(t *testing.T) {
 	if !strings.Contains(result, "---\n## Included MRs") {
 		t.Error("expected result to contain section header")
 	}
-	if !strings.Contains(result, "- [!123 Add feature](https://gitlab.com/mr/123) by @alice") {
+	if !strings.Contains(result, "- [Add feature](https://gitlab.com/mr/123) by @alice") {
 		t.Errorf("expected result to contain MR entry, got: %s", result)
 	}
 }
 
 func TestBuildReleaseMRDescription_ExistingSection(t *testing.T) {
-	existingDesc := "Some description\n\n---\n## Included MRs\n- [!100 Old MR](https://gitlab.com/mr/100) by @bob"
+	existingDesc := "Some description\n\n---\n## Included MRs\n- [Old MR](https://gitlab.com/group/project/-/merge_requests/100) by @bob"
 	mrs := []includedMR{
-		{IID: 123, Title: "Add feature", URL: "https://gitlab.com/mr/123", Author: "alice"},
+		{IID: 123, Title: "Add feature", URL: "https://gitlab.com/group/project/-/merge_requests/123", Author: "alice"},
 	}
 
 	result := (&AutoReleaseConsumer{}).buildReleaseMRDescription(existingDesc, mrs)
 
-	if !strings.Contains(result, "- [!100 Old MR]") {
+	if !strings.Contains(result, "- [Old MR]") {
 		t.Error("expected result to preserve existing MR entry")
 	}
-	if !strings.Contains(result, "- [!123 Add feature]") {
+	if !strings.Contains(result, "- [Add feature]") {
 		t.Error("expected result to contain new MR entry")
 	}
 }
 
 func TestBuildReleaseMRDescription_DeduplicatesExistingMRs(t *testing.T) {
-	existingDesc := "---\n## Included MRs\n- [!123 Old Title](https://gitlab.com/mr/123) by @bob"
+	existingDesc := "---\n## Included MRs\n- [Old Title](https://gitlab.com/group/project/-/merge_requests/123) by @bob"
 	mrs := []includedMR{
-		{IID: 123, Title: "Add feature", URL: "https://gitlab.com/mr/123", Author: "alice"},
+		{IID: 123, Title: "Add feature", URL: "https://gitlab.com/group/project/-/merge_requests/123", Author: "alice"},
 	}
 
 	result := (&AutoReleaseConsumer{}).buildReleaseMRDescription(existingDesc, mrs)
 
-	// Should not add duplicate !123
-	count := strings.Count(result, "[!123")
+	// Should not add duplicate based on URL
+	count := strings.Count(result, "merge_requests/123")
 	if count != 1 {
-		t.Errorf("expected exactly 1 occurrence of [!123, got %d", count)
+		t.Errorf("expected exactly 1 occurrence of MR URL, got %d", count)
+	}
+}
+
+func TestStripJiraPrefix_WithColonSeparator(t *testing.T) {
+	title := "INTDEV-123: Add new feature"
+	result := stripJiraPrefix(title, "INTDEV-123")
+	if result != "Add new feature" {
+		t.Errorf("expected 'Add new feature', got '%s'", result)
+	}
+}
+
+func TestStripJiraPrefix_WithSpaceSeparator(t *testing.T) {
+	title := "INTDEV-123 Add new feature"
+	result := stripJiraPrefix(title, "INTDEV-123")
+	if result != "Add new feature" {
+		t.Errorf("expected 'Add new feature', got '%s'", result)
+	}
+}
+
+func TestStripJiraPrefix_NoPrefix(t *testing.T) {
+	title := "Add new feature"
+	result := stripJiraPrefix(title, "INTDEV-123")
+	if result != "Add new feature" {
+		t.Errorf("expected 'Add new feature', got '%s'", result)
+	}
+}
+
+func TestStripJiraPrefix_EmptyJiraTaskID(t *testing.T) {
+	title := "INTDEV-123: Add new feature"
+	result := stripJiraPrefix(title, "")
+	if result != "INTDEV-123: Add new feature" {
+		t.Errorf("expected original title, got '%s'", result)
+	}
+}
+
+func TestBuildReleaseMRDescription_WithJiraTask(t *testing.T) {
+	consumer := &AutoReleaseConsumer{jiraBaseURL: "https://jira.example.com"}
+	mrs := []includedMR{
+		{
+			IID:        123,
+			Title:      "INTDEV-42405: Добавленые грейды и текущяа зп сотрудника",
+			URL:        "https://gitlab.com/group/project/-/merge_requests/123",
+			Author:     "p.kukushkin",
+			JiraTaskID: "INTDEV-42405",
+		},
+	}
+
+	result := consumer.buildReleaseMRDescription("", mrs)
+
+	expected := "- [INTDEV-42405](https://jira.example.com/browse/INTDEV-42405) [Добавленые грейды и текущяа зп сотрудника](https://gitlab.com/group/project/-/merge_requests/123) by @p.kukushkin"
+	if !strings.Contains(result, expected) {
+		t.Errorf("expected result to contain Jira-formatted entry.\nExpected: %s\nGot: %s", expected, result)
+	}
+}
+
+func TestBuildReleaseMRDescription_WithoutJiraTask(t *testing.T) {
+	consumer := &AutoReleaseConsumer{jiraBaseURL: "https://jira.example.com"}
+	mrs := []includedMR{
+		{
+			IID:        123,
+			Title:      "Add new feature",
+			URL:        "https://gitlab.com/group/project/-/merge_requests/123",
+			Author:     "alice",
+			JiraTaskID: "",
+		},
+	}
+
+	result := consumer.buildReleaseMRDescription("", mrs)
+
+	expected := "- [Add new feature](https://gitlab.com/group/project/-/merge_requests/123) by @alice"
+	if !strings.Contains(result, expected) {
+		t.Errorf("expected result to contain simple entry.\nExpected: %s\nGot: %s", expected, result)
+	}
+}
+
+func TestBuildReleaseMRDescription_JiraTaskWithoutBaseURL(t *testing.T) {
+	consumer := &AutoReleaseConsumer{jiraBaseURL: ""}
+	mrs := []includedMR{
+		{
+			IID:        123,
+			Title:      "INTDEV-42405: Add new feature",
+			URL:        "https://gitlab.com/group/project/-/merge_requests/123",
+			Author:     "alice",
+			JiraTaskID: "INTDEV-42405",
+		},
+	}
+
+	result := consumer.buildReleaseMRDescription("", mrs)
+
+	// Without jiraBaseURL, should fall back to simple format (with original title)
+	expected := "- [INTDEV-42405: Add new feature](https://gitlab.com/group/project/-/merge_requests/123) by @alice"
+	if !strings.Contains(result, expected) {
+		t.Errorf("expected result to contain simple entry when jiraBaseURL is empty.\nExpected: %s\nGot: %s", expected, result)
+	}
+}
+
+func TestBuildReleaseMRDescription_DeduplicatesOldFormat(t *testing.T) {
+	// Test that we can still deduplicate entries in the old [!IID Title] format
+	existingDesc := "---\n## Included MRs\n- [!123 Old Title](https://gitlab.com/group/project/-/merge_requests/123) by @bob"
+	mrs := []includedMR{
+		{IID: 123, Title: "Add feature", URL: "https://gitlab.com/group/project/-/merge_requests/123", Author: "alice"},
+	}
+
+	result := (&AutoReleaseConsumer{}).buildReleaseMRDescription(existingDesc, mrs)
+
+	// Should not add duplicate based on URL (even though old format used [!IID])
+	count := strings.Count(result, "merge_requests/123")
+	if count != 1 {
+		t.Errorf("expected exactly 1 occurrence of MR URL, got %d", count)
 	}
 }
 
@@ -98,7 +207,7 @@ func TestProcessAutoReleaseBranches_NoConfigs(t *testing.T) {
 	mockMRs := &mocks.MockMergeRequestsService{}
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessAutoReleaseBranches()
 
 	if len(mockBranches.GetBranchCalls) != 0 {
@@ -117,7 +226,7 @@ func TestProcessAutoReleaseBranches_NoReleaseLabel(t *testing.T) {
 	mockMRs := &mocks.MockMergeRequestsService{}
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessAutoReleaseBranches()
 
 	if len(mockBranches.GetBranchCalls) != 0 {
@@ -153,7 +262,7 @@ func TestProcessAutoReleaseBranches_CreatesNewBranchAndMR(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessAutoReleaseBranches()
 
 	if len(mockBranches.CreateBranchCalls) != 1 {
@@ -209,7 +318,7 @@ func TestProcessAutoReleaseBranches_ExistingReleaseMR(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessAutoReleaseBranches()
 
 	// Should not create a new branch since release MR exists
@@ -250,7 +359,7 @@ func TestProcessAutoReleaseBranches_BranchNamingFormat(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessAutoReleaseBranches()
 
 	if len(mockBranches.CreateBranchCalls) != 1 {
@@ -311,7 +420,7 @@ func TestProcessAutoReleaseBranches_RetargetsMRsToReleaseBranch(t *testing.T) {
 
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessAutoReleaseBranches()
 
 	if len(mockMRs.UpdateMergeRequestCalls) != 1 {
@@ -364,7 +473,7 @@ func TestProcessAutoReleaseBranches_SkipsBlockedMRs(t *testing.T) {
 
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessAutoReleaseBranches()
 
 	// Should not retarget the blocked MR
@@ -404,7 +513,7 @@ func TestProcessAutoReleaseBranches_SkipsReleaseMR(t *testing.T) {
 
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessAutoReleaseBranches()
 
 	// Should not retarget the release MR itself
@@ -438,7 +547,7 @@ func TestProcessAutoReleaseBranches_CreateBranchError(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 
 	// Should not panic
 	consumer.ProcessAutoReleaseBranches()
@@ -457,7 +566,7 @@ func TestProcessReleaseMRDescriptions_NoConfigs(t *testing.T) {
 	mockMRs := &mocks.MockMergeRequestsService{}
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessReleaseMRDescriptions()
 
 	if len(mockMRs.ListProjectMergeRequestsCalls) != 0 {
@@ -481,7 +590,7 @@ func TestProcessReleaseMRDescriptions_NoOpenReleaseMR(t *testing.T) {
 
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessReleaseMRDescriptions()
 
 	// Should not try to get commits if no release MR
@@ -550,7 +659,7 @@ func TestProcessReleaseMRDescriptions_AddsMRsToDescription(t *testing.T) {
 
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessReleaseMRDescriptions()
 
 	if len(mockMRs.UpdateMergeRequestCalls) != 1 {
@@ -565,7 +674,7 @@ func TestProcessReleaseMRDescriptions_AddsMRsToDescription(t *testing.T) {
 		t.Error("expected updated description to contain section header")
 	}
 
-	if !strings.Contains(updatedDescription, "[!20 Add new feature]") {
+	if !strings.Contains(updatedDescription, "[Add new feature]") {
 		t.Errorf("expected updated description to contain MR link, got: %s", updatedDescription)
 	}
 
@@ -614,7 +723,7 @@ func TestProcessReleaseMRDescriptions_NoMergeCommits(t *testing.T) {
 
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessReleaseMRDescriptions()
 
 	// Should not update description when no merge commits found
@@ -653,7 +762,7 @@ func TestProcessAutoReleaseBranches_CreateMRError(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 
 	// Should not panic
 	consumer.ProcessAutoReleaseBranches()
@@ -699,7 +808,7 @@ func TestProcessReleaseMRDescriptions_NoCommits(t *testing.T) {
 
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessReleaseMRDescriptions()
 
 	// Should not try to get full MR details or update when no commits
@@ -735,7 +844,7 @@ func TestExtractIncludedMRs_ParsesMergeCommits(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, &mocks.MockBranchesService{})
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, &mocks.MockBranchesService{}, "")
 
 	result := consumer.extractIncludedMRs(commits, 123)
 
@@ -778,7 +887,7 @@ func TestProcessAutoReleaseBranches_GetBranchError(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 
 	// Should not panic
 	consumer.ProcessAutoReleaseBranches()
@@ -817,7 +926,7 @@ func TestExtractIncludedMRs_MRWithoutAuthor(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, &mocks.MockBranchesService{})
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, &mocks.MockBranchesService{}, "")
 
 	result := consumer.extractIncludedMRs(commits, 123)
 
@@ -878,7 +987,7 @@ func TestProcessAutoReleaseBranches_Pagination(t *testing.T) {
 
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessAutoReleaseBranches()
 
 	// Should retarget both MRs from both pages
@@ -951,7 +1060,7 @@ func TestProcessReleaseMRDescriptions_CommitsPagination(t *testing.T) {
 
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessReleaseMRDescriptions()
 
 	// Should have called GetMergeRequestCommits twice (pagination)
@@ -960,11 +1069,13 @@ func TestProcessReleaseMRDescriptions_CommitsPagination(t *testing.T) {
 	}
 
 	// Should have extracted MRs from both pages
-	if !strings.Contains(updatedDescription, "[!100") {
-		t.Errorf("expected description to contain MR !100 from page 1")
+	if !strings.Contains(updatedDescription, "[MR Title]") {
+		t.Errorf("expected description to contain MR from page 1")
 	}
-	if !strings.Contains(updatedDescription, "[!101") {
-		t.Errorf("expected description to contain MR !101 from page 2")
+	// Both MRs have the same title in this test, just check both entries exist
+	count := strings.Count(updatedDescription, "[MR Title]")
+	if count != 2 {
+		t.Errorf("expected description to contain 2 MR entries, got %d", count)
 	}
 }
 
@@ -979,7 +1090,7 @@ func TestBranchExists_BranchFound(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, mockBranches, "")
 
 	if !consumer.branchExists(123, "develop") {
 		t.Error("expected branchExists to return true for existing branch")
@@ -995,7 +1106,7 @@ func TestBranchExists_BranchNotFound(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, mockBranches, "")
 
 	if consumer.branchExists(123, "deleted-branch") {
 		t.Error("expected branchExists to return false for non-existing branch")
@@ -1030,7 +1141,7 @@ func TestRetargetOrphanedMRs_RetargetsMRsWithDeletedTargetBranch(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.retargetOrphanedMRs(123, "develop", "release")
 
 	if len(mockMRs.UpdateMergeRequestCalls) != 1 {
@@ -1067,7 +1178,7 @@ func TestRetargetOrphanedMRs_SkipsMRsAlreadyTargetingDev(t *testing.T) {
 
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.retargetOrphanedMRs(123, "develop", "release")
 
 	// Should not retarget MRs already targeting dev
@@ -1102,7 +1213,7 @@ func TestRetargetOrphanedMRs_SkipsMRsWithReleaseLabel(t *testing.T) {
 
 	mockBranches := &mocks.MockBranchesService{}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.retargetOrphanedMRs(123, "develop", "release")
 
 	// Should not retarget release MRs
@@ -1136,7 +1247,7 @@ func TestRetargetOrphanedMRs_IncludesBlockedMRs(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.retargetOrphanedMRs(123, "develop", "release")
 
 	// Should retarget blocked MRs (unlike normal retargeting which skips them)
@@ -1181,7 +1292,7 @@ func TestRetargetOrphanedMRs_CachesBranchExistenceChecks(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.retargetOrphanedMRs(123, "develop", "release")
 
 	// Should only check branch existence once (cached)
@@ -1220,7 +1331,7 @@ func TestRetargetOrphanedMRs_DoesNotRetargetWhenBranchExists(t *testing.T) {
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.retargetOrphanedMRs(123, "develop", "release")
 
 	// Should not retarget MRs targeting existing branches
@@ -1279,7 +1390,7 @@ func TestProcessAutoReleaseBranches_CallsRetargetOrphanedMRsFirst(t *testing.T) 
 		},
 	}
 
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches)
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
 	consumer.ProcessAutoReleaseBranches()
 
 	// Should retarget the orphaned MR

@@ -3,6 +3,7 @@ package consumers
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,12 @@ import (
 	"devstreamlinebot/models"
 	"devstreamlinebot/polling"
 	"devstreamlinebot/utils"
+)
+
+const (
+	defaultBlockLabelColor        = "#dc143c" // crimson
+	defaultReleaseLabelColor      = "#808080" // gray
+	defaultReleaseReadyLabelColor = "#FFD700" // gold
 )
 
 // VKCommandConsumer processes VK Teams messages and looks for commands.
@@ -46,7 +53,9 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 	}
 
 	// Check commands (order matters for prefix matching)
-	if strings.HasPrefix(msg.Text, "/subscribe") {
+	if strings.HasPrefix(msg.Text, "/subscribers") {
+		c.handleSubscribersCommand(msg)
+	} else if strings.HasPrefix(msg.Text, "/subscribe") {
 		c.handleSubscribeCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/unsubscribe") {
 		c.handleUnsubscribeCommand(msg, from)
@@ -72,6 +81,8 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleDailyDigestCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/add_block_label") {
 		c.handleAddBlockLabelCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/add_release_ready_label") {
+		c.handleAddReleaseReadyLabelCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/add_release_label") {
 		c.handleAddReleaseLabelCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/ensure_label") {
@@ -80,6 +91,12 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleReleaseManagersCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/auto_release_branch") {
 		c.handleAutoReleaseBranchCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/add_jira_prefix") {
+		c.handleAddJiraPrefixCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/release_unsubscribe") {
+		c.handleReleaseUnsubscribeCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/release_subscribe") {
+		c.handleReleaseSubscribeCommand(msg, from)
 	}
 }
 
@@ -1063,6 +1080,30 @@ func (c *VKCommandConsumer) handleDailyDigestCommand(msg *botgolang.Message, fro
 	c.sendReply(msg, fmt.Sprintf("Daily digest is now %s.", status))
 }
 
+func (c *VKCommandConsumer) handleSubscribersCommand(msg *botgolang.Message) {
+	var prefs []models.DailyDigestPreference
+	c.db.Preload("VKUser").Where("enabled = ?", true).Find(&prefs)
+
+	if len(prefs) == 0 {
+		c.sendReply(msg, "No users subscribed to daily digests.")
+		return
+	}
+
+	var lines []string
+	for _, pref := range prefs {
+		tzStr := formatTimezone(pref.TimezoneOffset)
+		lines = append(lines, fmt.Sprintf("%s (%s)", pref.VKUser.Nick, tzStr))
+	}
+	c.sendReply(msg, "Daily digest subscribers:\n"+strings.Join(lines, "\n"))
+}
+
+func formatTimezone(offset int) string {
+	if offset >= 0 {
+		return fmt.Sprintf("UTC+%d", offset)
+	}
+	return fmt.Sprintf("UTC%d", offset)
+}
+
 func parseTimezoneOffset(s string) (int, error) {
 	s = strings.TrimSpace(s)
 	if len(s) < 2 {
@@ -1203,7 +1244,7 @@ func (c *VKCommandConsumer) handleAddReleaseLabelCommand(msg *botgolang.Message,
 
 	parts := strings.Fields(argStr)
 	labelName := parts[0]
-	color := "#808080"
+	color := defaultReleaseLabelColor
 
 	if len(parts) >= 2 {
 		lastPart := parts[len(parts)-1]
@@ -1268,6 +1309,107 @@ func (c *VKCommandConsumer) handleAddReleaseLabelCommand(msg *botgolang.Message,
 	var reply string
 	if len(successRepos) > 0 {
 		reply = fmt.Sprintf("Release label '%s' added for: %s", labelName, strings.Join(successRepos, ", "))
+	}
+	if len(failedRepos) > 0 {
+		if reply != "" {
+			reply += "\n"
+		}
+		reply += fmt.Sprintf("Failed for: %s", strings.Join(failedRepos, ", "))
+	}
+	if reply == "" {
+		reply = "No repositories were updated."
+	}
+	c.sendReply(msg, reply)
+}
+
+func (c *VKCommandConsumer) handleAddReleaseReadyLabelCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var subs []models.RepositorySubscription
+	c.db.Where("chat_id = ?", chat.ID).Preload("Repository").Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/add_release_ready_label"))
+	if argStr == "" {
+		c.sendReply(msg, "Usage: /add_release_ready_label <label_name> [#hexcolor]\nDefault color: #FFD700 (gold)")
+		return
+	}
+
+	parts := strings.Fields(argStr)
+	labelName := parts[0]
+	color := defaultReleaseReadyLabelColor
+
+	if len(parts) >= 2 {
+		lastPart := parts[len(parts)-1]
+		if strings.HasPrefix(lastPart, "#") && isValidHexColor(lastPart) {
+			color = lastPart
+			if len(parts) > 2 {
+				labelName = strings.Join(parts[:len(parts)-1], " ")
+			}
+		} else {
+			labelName = argStr
+		}
+	}
+
+	var successRepos []string
+	var failedRepos []string
+
+	for _, sub := range subs {
+		repo := sub.Repository
+
+		labels, _, err := c.glClient.Labels.ListLabels(repo.GitlabID, &gitlab.ListLabelsOptions{
+			Search: gitlab.Ptr(labelName),
+		})
+
+		labelExists := false
+		if err == nil {
+			for _, l := range labels {
+				if l.Name == labelName {
+					labelExists = true
+					break
+				}
+			}
+		}
+
+		if !labelExists {
+			_, _, err := c.glClient.Labels.CreateLabel(repo.GitlabID, &gitlab.CreateLabelOptions{
+				Name:  gitlab.Ptr(labelName),
+				Color: gitlab.Ptr(color),
+			})
+			if err != nil {
+				log.Printf("failed to create label %s in repo %d: %v", labelName, repo.GitlabID, err)
+				failedRepos = append(failedRepos, repo.Name)
+				continue
+			}
+		}
+
+		releaseReadyLabel := models.ReleaseReadyLabel{
+			RepositoryID: repo.ID,
+			LabelName:    labelName,
+		}
+		if err := c.db.FirstOrCreate(&releaseReadyLabel, models.ReleaseReadyLabel{
+			RepositoryID: repo.ID,
+			LabelName:    labelName,
+		}).Error; err != nil {
+			log.Printf("failed to save release ready label %s for repo %d: %v", labelName, repo.ID, err)
+			failedRepos = append(failedRepos, repo.Name)
+			continue
+		}
+
+		successRepos = append(successRepos, repo.Name)
+	}
+
+	var reply string
+	if len(successRepos) > 0 {
+		reply = fmt.Sprintf("Release ready label '%s' added for: %s", labelName, strings.Join(successRepos, ", "))
 	}
 	if len(failedRepos) > 0 {
 		if reply != "" {
@@ -1426,7 +1568,7 @@ func splitRespectingQuotes(s string, delim rune) []string {
 }
 
 func parseLabelEntry(entry string) (name, color string) {
-	color = "#dc143c"
+	color = defaultBlockLabelColor
 	entry = strings.TrimSpace(entry)
 
 	if strings.HasPrefix(entry, "\"") {
@@ -1570,6 +1712,202 @@ func (c *VKCommandConsumer) handleAutoReleaseBranchCommand(msg *botgolang.Messag
 		reply = "No repositories were configured."
 	}
 	c.sendReply(msg, reply)
+}
+
+func (c *VKCommandConsumer) handleAddJiraPrefixCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var subs []models.RepositorySubscription
+	c.db.Where("chat_id = ?", chat.ID).Preload("Repository").Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/add_jira_prefix"))
+	if argStr == "" {
+		c.sendReply(msg, "Usage: /add_jira_prefix <PREFIX> (e.g., /add_jira_prefix INTDEV)")
+		return
+	}
+
+	prefix := strings.ToUpper(strings.TrimSpace(argStr))
+
+	matched, _ := regexp.MatchString(`^[A-Z]+$`, prefix)
+	if !matched {
+		c.sendReply(msg, "Invalid prefix format. Must be uppercase letters only (e.g., INTDEV)")
+		return
+	}
+
+	var successRepos []string
+	var failedRepos []string
+
+	for _, sub := range subs {
+		jiraPrefix := models.JiraProjectPrefix{
+			RepositoryID: sub.RepositoryID,
+			Prefix:       prefix,
+		}
+		if err := c.db.FirstOrCreate(&jiraPrefix, models.JiraProjectPrefix{
+			RepositoryID: sub.RepositoryID,
+			Prefix:       prefix,
+		}).Error; err != nil {
+			log.Printf("failed to save jira prefix %s for repo %d: %v", prefix, sub.RepositoryID, err)
+			failedRepos = append(failedRepos, sub.Repository.Name)
+			continue
+		}
+		successRepos = append(successRepos, sub.Repository.Name)
+	}
+
+	var reply string
+	if len(successRepos) > 0 {
+		reply = fmt.Sprintf("Jira prefix '%s' added for: %s", prefix, strings.Join(successRepos, ", "))
+	}
+	if len(failedRepos) > 0 {
+		if reply != "" {
+			reply += "\n"
+		}
+		reply += fmt.Sprintf("Failed for: %s", strings.Join(failedRepos, ", "))
+	}
+	if reply == "" {
+		reply = "No repositories were updated."
+	}
+	c.sendReply(msg, reply)
+}
+
+func (c *VKCommandConsumer) handleReleaseSubscribeCommand(msg *botgolang.Message, from botgolang.Contact) {
+	parts := strings.Fields(msg.Text)
+	if len(parts) < 2 {
+		c.sendReply(msg, "Usage: /release_subscribe <repository_id>")
+		return
+	}
+
+	repoIDStr := strings.TrimSpace(parts[1])
+	repoID, err := strconv.Atoi(repoIDStr)
+	if err != nil {
+		c.sendReply(msg, fmt.Sprintf("Invalid repository ID: %s", repoIDStr))
+		return
+	}
+
+	var repo models.Repository
+	if err := c.db.Where("gitlab_id = ?", repoID).First(&repo).Error; err != nil {
+		c.sendReply(msg, fmt.Sprintf("Repository with ID %d not found", repoID))
+		return
+	}
+
+	var autoReleaseConfig models.AutoReleaseBranchConfig
+	if err := c.db.Where("repository_id = ?", repo.ID).First(&autoReleaseConfig).Error; err != nil {
+		c.sendReply(msg, "Auto-release not configured. Use /auto_release_branch first.")
+		return
+	}
+
+	var releaseReadyLabel models.ReleaseReadyLabel
+	if err := c.db.Where("repository_id = ?", repo.ID).First(&releaseReadyLabel).Error; err != nil {
+		c.sendReply(msg, "Release ready label not configured. Use /add_release_ready_label first.")
+		return
+	}
+
+	chatID := fmt.Sprint(msg.Chat.ID)
+	userID := fmt.Sprint(from.ID)
+	var alreadySubscribed bool
+
+	err = c.db.Transaction(func(tx *gorm.DB) error {
+		var chat models.Chat
+		chatData := models.Chat{
+			ChatID: chatID,
+			Type:   msg.Chat.Type,
+			Title:  msg.Chat.Title,
+		}
+		if err := tx.Where(models.Chat{ChatID: chatID}).Assign(chatData).FirstOrCreate(&chat).Error; err != nil {
+			return fmt.Errorf("failed to process chat: %w", err)
+		}
+
+		var user models.VKUser
+		vkUserData := models.VKUser{
+			UserID:    userID,
+			FirstName: from.FirstName,
+			LastName:  from.LastName,
+		}
+		if err := tx.Where(models.VKUser{UserID: userID}).Assign(vkUserData).FirstOrCreate(&user).Error; err != nil {
+			return fmt.Errorf("failed to process user: %w", err)
+		}
+
+		var subscription models.ReleaseSubscription
+		result := tx.Where(models.ReleaseSubscription{
+			RepositoryID: repo.ID,
+			ChatID:       chat.ID,
+		}).Attrs(models.ReleaseSubscription{
+			VKUserID:     user.ID,
+			SubscribedAt: time.Now(),
+		}).FirstOrCreate(&subscription)
+
+		if result.Error != nil {
+			return fmt.Errorf("failed to create subscription: %w", result.Error)
+		}
+
+		if result.RowsAffected == 0 {
+			alreadySubscribed = true
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		log.Printf("release subscription transaction failed: %v", err)
+		c.sendReply(msg, "Failed to create subscription. Please try again later.")
+		return
+	}
+
+	if alreadySubscribed {
+		c.sendReply(msg, fmt.Sprintf("This chat is already subscribed to release notifications for: %s", repo.Name))
+		return
+	}
+
+	c.sendReply(msg, fmt.Sprintf("Subscribed to release notifications for: %s", repo.Name))
+}
+
+func (c *VKCommandConsumer) handleReleaseUnsubscribeCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	parts := strings.Fields(msg.Text)
+	if len(parts) < 2 {
+		c.sendReply(msg, "Usage: /release_unsubscribe <repository_id>")
+		return
+	}
+
+	repoIDStr := strings.TrimSpace(parts[1])
+	repoID, err := strconv.Atoi(repoIDStr)
+	if err != nil {
+		c.sendReply(msg, fmt.Sprintf("Invalid repository ID: %s", repoIDStr))
+		return
+	}
+
+	var repo models.Repository
+	if err := c.db.Where("gitlab_id = ?", repoID).First(&repo).Error; err != nil {
+		c.sendReply(msg, fmt.Sprintf("Repository with ID %d not found", repoID))
+		return
+	}
+
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var sub models.ReleaseSubscription
+	if err := c.db.Where("repository_id = ? AND chat_id = ?", repo.ID, chat.ID).First(&sub).Error; err != nil {
+		c.sendReply(msg, fmt.Sprintf("No release subscription found for repository %s", repo.Name))
+		return
+	}
+
+	if err := c.db.Delete(&sub).Error; err != nil {
+		c.sendReply(msg, fmt.Sprintf("Failed to unsubscribe from release notifications for repository %s", repo.Name))
+		return
+	}
+
+	c.sendReply(msg, fmt.Sprintf("Unsubscribed from release notifications for: %s", repo.Name))
 }
 
 func (c *VKCommandConsumer) sendReply(msg *botgolang.Message, text string) {

@@ -7,6 +7,8 @@ vk:
   token: ""
 database:
   dsn: "devstreamline.db"
+jira:
+  base_url: ""  # e.g., https://jira.example.com
 
 # Optional: Override start time for MR processing (format: YYYY-MM-DD)
 # If not set, defaults to 2 days before bot startup

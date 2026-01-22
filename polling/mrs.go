@@ -3,6 +3,8 @@ package polling
 import (
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"time"
 
 	"devstreamlinebot/models"
@@ -92,6 +94,65 @@ func detectBlockLabelChanges(db *gorm.DB, mrID uint, repoID uint, oldLabels, new
 				fmt.Sprintf(`{"label":"%s"}`, label))
 		}
 	}
+}
+
+func detectReleaseReadyLabelChanges(db *gorm.DB, mrID uint, repoID uint, oldLabels, newLabels []string) {
+	var releaseReadyLabels []models.ReleaseReadyLabel
+	db.Where("repository_id = ?", repoID).Find(&releaseReadyLabels)
+	if len(releaseReadyLabels) == 0 {
+		return
+	}
+
+	releaseReadyLabelSet := make(map[string]bool)
+	for _, rrl := range releaseReadyLabels {
+		releaseReadyLabelSet[rrl.LabelName] = true
+	}
+
+	oldSet := make(map[string]bool)
+	for _, l := range oldLabels {
+		oldSet[l] = true
+	}
+	newSet := make(map[string]bool)
+	for _, l := range newLabels {
+		newSet[l] = true
+	}
+
+	now := time.Now()
+
+	for label := range newSet {
+		if releaseReadyLabelSet[label] && !oldSet[label] {
+			recordMRAction(db, mrID, models.ActionReleaseReadyLabelAdded, nil, nil, nil, now,
+				fmt.Sprintf(`{"label":"%s"}`, label))
+		}
+	}
+}
+
+func buildJiraPrefixPattern(db *gorm.DB, repoID uint) *regexp.Regexp {
+	var prefixes []models.JiraProjectPrefix
+	db.Where("repository_id = ?", repoID).Find(&prefixes)
+	if len(prefixes) == 0 {
+		return nil
+	}
+
+	var prefixStrs []string
+	for _, p := range prefixes {
+		prefixStrs = append(prefixStrs, regexp.QuoteMeta(p.Prefix))
+	}
+	pattern := fmt.Sprintf(`(%s)-\d+`, strings.Join(prefixStrs, "|"))
+	return regexp.MustCompile(pattern)
+}
+
+func extractJiraTaskID(jiraPattern *regexp.Regexp, branch, title string) string {
+	if jiraPattern == nil {
+		return ""
+	}
+	if match := jiraPattern.FindString(branch); match != "" {
+		return match
+	}
+	if match := jiraPattern.FindString(title); match != "" {
+		return match
+	}
+	return ""
 }
 
 func detectAndRecordStateChanges(db *gorm.DB, existingMR *models.MergeRequest, newMR *gitlab.BasicMergeRequest, localMRID uint) {
@@ -350,7 +411,7 @@ func syncMRApprovals(db *gorm.DB, client *gitlab.Client, projectID int, mrIID in
 	return approverUsers
 }
 
-func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeRequest, localRepositoryID uint, gitlabProjectID int) (uint, error) {
+func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeRequest, localRepositoryID uint, gitlabProjectID int, jiraPattern *regexp.Regexp) (uint, error) {
 	var author models.User
 	authorData := models.User{
 		GitlabID:  mr.Author.ID,
@@ -422,6 +483,7 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 		Squash:                      mr.Squash,
 		SquashOnMerge:               mr.SquashOnMerge,
 		UserNotesCount:              mr.UserNotesCount,
+		JiraTaskID:                  extractJiraTaskID(jiraPattern, mr.SourceBranch, mr.Title),
 	}
 
 	if mr.References != nil {
@@ -487,6 +549,7 @@ func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeR
 			oldLabelNames = append(oldLabelNames, l.Name)
 		}
 		detectBlockLabelChanges(db, existingMR.ID, localRepositoryID, oldLabelNames, mr.Labels)
+		detectReleaseReadyLabelChanges(db, existingMR.ID, localRepositoryID, oldLabelNames, mr.Labels)
 	}
 
 	var labelsToAssociate []models.Label
@@ -579,6 +642,7 @@ func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
 	}
 	for _, repo := range repos {
 		log.Printf("Polling merge requests for repository: %s (GitLab ID: %d)", repo.Name, repo.GitlabID)
+		jiraPattern := buildJiraPrefixPattern(db, repo.ID)
 		allCurrentlyOpenGitlabMRs := []*gitlab.BasicMergeRequest{}
 		opts := &gitlab.ListProjectMergeRequestsOptions{
 			State:       gitlab.Ptr("opened"),
@@ -604,7 +668,7 @@ func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
 		processedMRIDs := make([]uint, 0, len(allCurrentlyOpenGitlabMRs))
 
 		for _, gitlabMR := range allCurrentlyOpenGitlabMRs {
-			mrID, err := syncGitLabMRToDB(db, client, gitlabMR, repo.ID, repo.GitlabID)
+			mrID, err := syncGitLabMRToDB(db, client, gitlabMR, repo.ID, repo.GitlabID, jiraPattern)
 			if err != nil {
 				log.Printf("Failed to sync open MR from GitLab API (ProjectID: %d, MR IID: %d, MR ID: %d): %v", repo.GitlabID, gitlabMR.IID, gitlabMR.ID, err)
 			} else {
@@ -682,7 +746,7 @@ func PollMergeRequests(db *gorm.DB, client *gitlab.Client) {
 				UserNotesCount:              fullMRDetails.UserNotesCount,
 			}
 
-			_, err = syncGitLabMRToDB(db, client, basicMR, repo.ID, repo.GitlabID)
+			_, err = syncGitLabMRToDB(db, client, basicMR, repo.ID, repo.GitlabID, jiraPattern)
 			if err != nil {
 				log.Printf("Failed to re-sync stale MR (ProjectID: %d, MR IID: %d, MR ID: %d): %v", repo.GitlabID, fullMRDetails.IID, fullMRDetails.ID, err)
 			} else {

@@ -40,6 +40,8 @@ func SetupTestDB(t *testing.T) *gorm.DB {
 		&models.ReleaseLabel{},
 		&models.ReleaseManager{},
 		&models.AutoReleaseBranchConfig{},
+		&models.ReleaseReadyLabel{},
+		&models.ReleaseSubscription{},
 	)
 	if err != nil {
 		t.Fatalf("failed to migrate test database: %v", err)
@@ -445,4 +447,24 @@ func CreateAutoReleaseBranchConfig(db *gorm.DB, repo models.Repository, prefix, 
 	}
 	db.Create(&config)
 	return config
+}
+
+func CreateReleaseReadyLabel(db *gorm.DB, repo models.Repository, labelName string) models.ReleaseReadyLabel {
+	rrl := models.ReleaseReadyLabel{
+		RepositoryID: repo.ID,
+		LabelName:    labelName,
+	}
+	db.Create(&rrl)
+	return rrl
+}
+
+func CreateReleaseSubscription(db *gorm.DB, repo models.Repository, chat models.Chat, vkUser models.VKUser) models.ReleaseSubscription {
+	sub := models.ReleaseSubscription{
+		RepositoryID: repo.ID,
+		ChatID:       chat.ID,
+		VKUserID:     vkUser.ID,
+		SubscribedAt: time.Now(),
+	}
+	db.Create(&sub)
+	return sub
 }
