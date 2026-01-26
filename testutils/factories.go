@@ -42,6 +42,7 @@ func SetupTestDB(t *testing.T) *gorm.DB {
 		&models.AutoReleaseBranchConfig{},
 		&models.ReleaseReadyLabel{},
 		&models.ReleaseSubscription{},
+		&models.JiraProjectPrefix{},
 	)
 	if err != nil {
 		t.Fatalf("failed to migrate test database: %v", err)
@@ -467,4 +468,13 @@ func CreateReleaseSubscription(db *gorm.DB, repo models.Repository, chat models.
 	}
 	db.Create(&sub)
 	return sub
+}
+
+func CreateJiraProjectPrefix(db *gorm.DB, repo models.Repository, prefix string) models.JiraProjectPrefix {
+	jp := models.JiraProjectPrefix{
+		RepositoryID: repo.ID,
+		Prefix:       prefix,
+	}
+	db.Create(&jp)
+	return jp
 }

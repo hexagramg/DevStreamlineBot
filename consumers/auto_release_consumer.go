@@ -363,18 +363,55 @@ func (c *AutoReleaseConsumer) extractIncludedMRs(commits []*gitlab.Commit, proje
 		c.db.Where("gitlab_id IN ?", gitlabIDs).Find(&localMRs)
 
 		jiraTaskByGitlabID := make(map[int]string)
+		localMRIDByGitlabID := make(map[int]uint)
 		for _, lmr := range localMRs {
 			jiraTaskByGitlabID[lmr.GitlabID] = lmr.JiraTaskID
+			localMRIDByGitlabID[lmr.GitlabID] = lmr.ID
 		}
+
+		jiraPattern := c.buildJiraPrefixPatternForProject(projectID)
 
 		for i := range included {
 			if i < len(gitlabIDs) {
-				included[i].JiraTaskID = jiraTaskByGitlabID[gitlabIDs[i]]
+				gitlabID := gitlabIDs[i]
+				jiraTaskID := jiraTaskByGitlabID[gitlabID]
+
+				if jiraTaskID == "" && jiraPattern != nil {
+					if match := jiraPattern.FindString(included[i].Title); match != "" {
+						jiraTaskID = strings.ToUpper(match)
+						if localID, ok := localMRIDByGitlabID[gitlabID]; ok {
+							c.db.Model(&models.MergeRequest{}).
+								Where("id = ?", localID).
+								Update("jira_task_id", jiraTaskID)
+						}
+					}
+				}
+				included[i].JiraTaskID = jiraTaskID
 			}
 		}
 	}
 
 	return included
+}
+
+func (c *AutoReleaseConsumer) buildJiraPrefixPatternForProject(gitlabProjectID int) *regexp.Regexp {
+	var repo models.Repository
+	if err := c.db.Where("gitlab_id = ?", gitlabProjectID).First(&repo).Error; err != nil {
+		return nil
+	}
+
+	var prefixes []models.JiraProjectPrefix
+	c.db.Where("repository_id = ?", repo.ID).Find(&prefixes)
+	if len(prefixes) == 0 {
+		return nil
+	}
+
+	var prefixStrs []string
+	for _, p := range prefixes {
+		prefixStrs = append(prefixStrs, regexp.QuoteMeta(p.Prefix))
+	}
+	pattern := fmt.Sprintf(`(?i)(%s)-\d+`, strings.Join(prefixStrs, "|"))
+	return regexp.MustCompile(pattern)
 }
 
 func stripJiraPrefix(title, jiraTaskID string) string {

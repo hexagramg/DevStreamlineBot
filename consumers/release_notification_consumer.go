@@ -167,6 +167,9 @@ func (c *ReleaseNotificationConsumer) processRepoDescriptionChanges(repoID uint)
 	}
 
 	if releaseMR.LastNotifiedDescription == "" {
+		c.db.Model(&models.MergeRequest{}).
+			Where("id = ?", releaseMR.ID).
+			Update("last_notified_description", releaseMR.Description)
 		return
 	}
 

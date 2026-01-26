@@ -9,6 +9,7 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 
 	"devstreamlinebot/mocks"
+	"devstreamlinebot/models"
 	"devstreamlinebot/testutils"
 )
 
@@ -1412,5 +1413,366 @@ func TestProcessAutoReleaseBranches_CallsRetargetOrphanedMRsFirst(t *testing.T) 
 	}
 	if *updateCall.Opt.TargetBranch != "develop" {
 		t.Errorf("expected target branch 'develop', got %s", *updateCall.Opt.TargetBranch)
+	}
+}
+
+// --- buildJiraPrefixPatternForProject Tests ---
+
+func TestBuildJiraPrefixPattern_NoRepository(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, &mocks.MockBranchesService{}, "")
+
+	// Non-existent GitLab project ID
+	result := consumer.buildJiraPrefixPatternForProject(99999)
+
+	if result != nil {
+		t.Errorf("expected nil pattern when repository not found, got %v", result)
+	}
+}
+
+func TestBuildJiraPrefixPattern_NoPrefixesConfigured(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	// No Jira prefixes created
+
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, &mocks.MockBranchesService{}, "")
+
+	result := consumer.buildJiraPrefixPatternForProject(repo.GitlabID)
+
+	if result != nil {
+		t.Errorf("expected nil pattern when no prefixes configured, got %v", result)
+	}
+}
+
+func TestBuildJiraPrefixPattern_SinglePrefix(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	testutils.CreateJiraProjectPrefix(db, repo, "INTDEV")
+
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, &mocks.MockBranchesService{}, "")
+
+	result := consumer.buildJiraPrefixPatternForProject(repo.GitlabID)
+
+	if result == nil {
+		t.Fatal("expected non-nil pattern for single prefix")
+	}
+
+	// Pattern should match INTDEV-39577
+	if !result.MatchString("INTDEV-39577") {
+		t.Error("pattern should match INTDEV-39577")
+	}
+
+	// Should not match invalid format
+	if result.MatchString("INTDEV39577") {
+		t.Error("pattern should not match INTDEV39577 (missing hyphen)")
+	}
+
+	if result.MatchString("OTHER-123") {
+		t.Error("pattern should not match OTHER-123 (wrong prefix)")
+	}
+}
+
+func TestBuildJiraPrefixPattern_MultiplePrefixes(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	testutils.CreateJiraProjectPrefix(db, repo, "INTDEV")
+	testutils.CreateJiraProjectPrefix(db, repo, "PROJ")
+	testutils.CreateJiraProjectPrefix(db, repo, "TASK")
+
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, &mocks.MockBranchesService{}, "")
+
+	result := consumer.buildJiraPrefixPatternForProject(repo.GitlabID)
+
+	if result == nil {
+		t.Fatal("expected non-nil pattern for multiple prefixes")
+	}
+
+	// Should match any of the configured prefixes
+	if !result.MatchString("INTDEV-123") {
+		t.Error("pattern should match INTDEV-123")
+	}
+
+	if !result.MatchString("PROJ-456") {
+		t.Error("pattern should match PROJ-456")
+	}
+
+	if !result.MatchString("TASK-789") {
+		t.Error("pattern should match TASK-789")
+	}
+
+	// Should not match unconfigured prefix
+	if result.MatchString("OTHER-123") {
+		t.Error("pattern should not match OTHER-123 (unconfigured prefix)")
+	}
+}
+
+func TestBuildJiraPrefixPattern_CaseInsensitive(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	testutils.CreateJiraProjectPrefix(db, repo, "INTDEV")
+
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, &mocks.MockBranchesService{}, "")
+
+	result := consumer.buildJiraPrefixPatternForProject(repo.GitlabID)
+
+	if result == nil {
+		t.Fatal("expected non-nil pattern")
+	}
+
+	// Prefix configured as INTDEV should match lowercase
+	if !result.MatchString("intdev-123") {
+		t.Error("pattern should match lowercase: intdev-123")
+	}
+
+	// Should match mixed case
+	if !result.MatchString("Intdev-456") {
+		t.Error("pattern should match mixed case: Intdev-456")
+	}
+
+	if !result.MatchString("IntDev-789") {
+		t.Error("pattern should match mixed case: IntDev-789")
+	}
+
+	// Should still match uppercase
+	if !result.MatchString("INTDEV-000") {
+		t.Error("pattern should match uppercase: INTDEV-000")
+	}
+}
+
+func TestBuildJiraPrefixPattern_CaseInsensitive_LowercaseConfig(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	// Configure with lowercase prefix
+	testutils.CreateJiraProjectPrefix(db, repo, "intdev")
+
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, &mocks.MockBranchesService{}, "")
+
+	result := consumer.buildJiraPrefixPatternForProject(repo.GitlabID)
+
+	if result == nil {
+		t.Fatal("expected non-nil pattern")
+	}
+
+	// Lowercase config should match uppercase input
+	if !result.MatchString("INTDEV-789") {
+		t.Error("lowercase config 'intdev' should match uppercase: INTDEV-789")
+	}
+
+	// Should also match lowercase
+	if !result.MatchString("intdev-123") {
+		t.Error("lowercase config should match lowercase: intdev-123")
+	}
+}
+
+func TestBuildJiraPrefixPattern_ExtractsFromTitle(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	testutils.CreateJiraProjectPrefix(db, repo, "INTDEV")
+
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, &mocks.MockBranchesService{}, "")
+
+	result := consumer.buildJiraPrefixPatternForProject(repo.GitlabID)
+
+	if result == nil {
+		t.Fatal("expected non-nil pattern")
+	}
+
+	// Test extraction from real MR title format
+	title := "INTDEV-39577 offer: ограничение на сохранение офферов которые содержат невалидные позиции"
+	match := result.FindString(title)
+
+	if match == "" {
+		t.Error("pattern should find match in title")
+	}
+
+	// Should extract the full Jira ID with case-insensitive matching
+	upperMatch := strings.ToUpper(match)
+	if upperMatch != "INTDEV-39577" {
+		t.Errorf("expected to extract INTDEV-39577, got %s", match)
+	}
+}
+
+func TestBuildJiraPrefixPattern_ExtractsFromTitleWithColon(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	testutils.CreateJiraProjectPrefix(db, repo, "INTDEV")
+
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, &mocks.MockBranchesService{}, "")
+
+	result := consumer.buildJiraPrefixPatternForProject(repo.GitlabID)
+
+	if result == nil {
+		t.Fatal("expected non-nil pattern")
+	}
+
+	// Test extraction from title with colon separator
+	title := "INTDEV-42405: Добавленые грейды и текущяа зп сотрудника"
+	match := result.FindString(title)
+
+	upperMatch := strings.ToUpper(match)
+	if upperMatch != "INTDEV-42405" {
+		t.Errorf("expected to extract INTDEV-42405, got %s", match)
+	}
+}
+
+func TestBuildJiraPrefixPattern_SpecialCharactersInPrefix(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	// Prefix with characters that need escaping in regex
+	testutils.CreateJiraProjectPrefix(db, repo, "INT.DEV")
+
+	consumer := NewAutoReleaseConsumerWithServices(db, &mocks.MockMergeRequestsService{}, &mocks.MockBranchesService{}, "")
+
+	result := consumer.buildJiraPrefixPatternForProject(repo.GitlabID)
+
+	if result == nil {
+		t.Fatal("expected non-nil pattern")
+	}
+
+	// Should match literal INT.DEV, not INT + any char + DEV
+	if !result.MatchString("INT.DEV-123") {
+		t.Error("pattern should match INT.DEV-123")
+	}
+
+	// Should NOT match INTXDEV (where . matches any char)
+	if result.MatchString("INTXDEV-123") {
+		t.Error("pattern should NOT match INTXDEV-123 (dot should be escaped)")
+	}
+}
+
+// --- Integration Test for extractIncludedMRs with Jira extraction ---
+
+func TestExtractIncludedMRs_ExtractsJiraFromTitleWhenDBEmpty(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	author := userFactory.Create(testutils.WithUsername("alice"))
+	testutils.CreateJiraProjectPrefix(db, repo, "INTDEV")
+
+	// Create local MR with empty JiraTaskID
+	localMR := mrFactory.Create(repo, author,
+		testutils.WithMRGitlabID(50000),
+		testutils.WithTitle("INTDEV-39577 offer: ограничение на сохранение офферов"),
+	)
+
+	// Verify initial state - JiraTaskID should be empty
+	var initialMR models.MergeRequest
+	db.First(&initialMR, localMR.ID)
+	if initialMR.JiraTaskID != "" {
+		t.Fatalf("expected empty JiraTaskID initially, got %s", initialMR.JiraTaskID)
+	}
+
+	commits := []*gitlab.Commit{
+		{ID: "c1", Message: "Merge branch 'feature' into 'develop'\n\nSee merge request group/project!1"},
+	}
+
+	mockMRs := &mocks.MockMergeRequestsService{
+		GetMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.GetMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			return &gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{
+					ID:     50000, // GitlabID matches local MR
+					IID:    1,
+					Title:  "INTDEV-39577 offer: ограничение на сохранение офферов",
+					WebURL: "https://gitlab.com/mr/1",
+					Author: &gitlab.BasicUser{Username: "alice"},
+				},
+			}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, &mocks.MockBranchesService{}, "https://jira.example.com")
+
+	result := consumer.extractIncludedMRs(commits, repo.GitlabID)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 MR, got %d", len(result))
+	}
+
+	// Check that JiraTaskID was extracted and returned
+	if result[0].JiraTaskID != "INTDEV-39577" {
+		t.Errorf("expected JiraTaskID 'INTDEV-39577', got '%s'", result[0].JiraTaskID)
+	}
+
+	// Check that JiraTaskID was persisted to DB
+	var updatedMR models.MergeRequest
+	db.First(&updatedMR, localMR.ID)
+	if updatedMR.JiraTaskID != "INTDEV-39577" {
+		t.Errorf("expected DB JiraTaskID 'INTDEV-39577', got '%s'", updatedMR.JiraTaskID)
+	}
+}
+
+func TestExtractIncludedMRs_DoesNotOverwriteExistingJiraTaskID(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	author := userFactory.Create(testutils.WithUsername("alice"))
+	testutils.CreateJiraProjectPrefix(db, repo, "INTDEV")
+
+	// Create local MR with existing JiraTaskID
+	localMR := mrFactory.Create(repo, author,
+		testutils.WithMRGitlabID(50000),
+		testutils.WithTitle("INTDEV-99999 some other task"),
+	)
+	db.Model(&localMR).Update("jira_task_id", "INTDEV-11111")
+
+	commits := []*gitlab.Commit{
+		{ID: "c1", Message: "Merge branch 'feature' into 'develop'\n\nSee merge request group/project!1"},
+	}
+
+	mockMRs := &mocks.MockMergeRequestsService{
+		GetMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.GetMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			return &gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{
+					ID:     50000,
+					IID:    1,
+					Title:  "INTDEV-99999 some other task",
+					WebURL: "https://gitlab.com/mr/1",
+					Author: &gitlab.BasicUser{Username: "alice"},
+				},
+			}, mocks.NewMockResponse(0), nil
+		},
+	}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, &mocks.MockBranchesService{}, "https://jira.example.com")
+
+	result := consumer.extractIncludedMRs(commits, repo.GitlabID)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 MR, got %d", len(result))
+	}
+
+	// Should use existing JiraTaskID from DB, not extract from title
+	if result[0].JiraTaskID != "INTDEV-11111" {
+		t.Errorf("expected JiraTaskID 'INTDEV-11111' (from DB), got '%s'", result[0].JiraTaskID)
+	}
+
+	// DB should still have original value
+	var updatedMR models.MergeRequest
+	db.First(&updatedMR, localMR.ID)
+	if updatedMR.JiraTaskID != "INTDEV-11111" {
+		t.Errorf("expected DB JiraTaskID 'INTDEV-11111' (unchanged), got '%s'", updatedMR.JiraTaskID)
 	}
 }
