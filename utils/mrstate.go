@@ -869,10 +869,14 @@ func getAuthorOnFixesTimeFromCache(mr *models.MergeRequest, cache *MRDataCache) 
 
 	for i := range comments {
 		c := &comments[i]
-		if c.ThreadStarterID == nil && c.Resolvable {
-			threadStarters[c.GitlabDiscussionID] = c
+		if c.Resolvable {
+			if _, exists := threadStarters[c.GitlabDiscussionID]; !exists {
+				threadStarters[c.GitlabDiscussionID] = c
+			}
 		}
-		threadLastComments[c.GitlabDiscussionID] = c
+		if c.IsLastInThread {
+			threadLastComments[c.GitlabDiscussionID] = c
+		}
 	}
 
 	var awaitingDiscussionIDs []string
