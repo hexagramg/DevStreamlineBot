@@ -162,8 +162,13 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 
 	var pendingReview []DigestMR
 	var pendingFixes []DigestMR
+	var blocked []DigestMR
 
 	for _, dmr := range digestMRs {
+		if dmr.Blocked {
+			blocked = append(blocked, dmr)
+			continue
+		}
 		switch dmr.State {
 		case StateOnReview:
 			pendingReview = append(pendingReview, dmr)
@@ -177,6 +182,9 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 	})
 	sort.Slice(pendingFixes, func(i, j int) bool {
 		return pendingFixes[i].SLAPercentage > pendingFixes[j].SLAPercentage
+	})
+	sort.Slice(blocked, func(i, j int) bool {
+		return blocked[i].SLAPercentage > blocked[j].SLAPercentage
 	})
 
 	var sb strings.Builder
@@ -194,6 +202,16 @@ func BuildEnhancedReviewDigest(db *gorm.DB, digestMRs []DigestMR) string {
 		}
 		sb.WriteString("PENDING FIXES:\n")
 		for _, dmr := range pendingFixes {
+			writeDigestEntry(&sb, &dmr, mentionMap, activeReviewersMap[dmr.MR.ID])
+		}
+	}
+
+	if len(blocked) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("BLOCKED:\n")
+		for _, dmr := range blocked {
 			writeDigestEntry(&sb, &dmr, mentionMap, activeReviewersMap[dmr.MR.ID])
 		}
 	}
@@ -307,12 +325,22 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs, authorOnReviewMRs,
 		return authorOnReviewMRs[i].SLAPercentage > authorOnReviewMRs[j].SLAPercentage
 	})
 
+	var activeReviewMRs []DigestMR
+	var blockedReviewMRs []DigestMR
+	for _, dmr := range reviewMRs {
+		if dmr.Blocked {
+			blockedReviewMRs = append(blockedReviewMRs, dmr)
+		} else {
+			activeReviewMRs = append(activeReviewMRs, dmr)
+		}
+	}
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("ACTIONS FOR %s:\n", username))
 
-	if len(reviewMRs) > 0 {
+	if len(activeReviewMRs) > 0 {
 		sb.WriteString("\nPENDING REVIEW:\n")
-		for _, dmr := range reviewMRs {
+		for _, dmr := range activeReviewMRs {
 			writeDigestEntry(&sb, &dmr, mentionMap, activeReviewersMap[dmr.MR.ID])
 		}
 	}
@@ -348,6 +376,13 @@ func BuildUserActionsDigest(db *gorm.DB, reviewMRs, fixesMRs, authorOnReviewMRs,
 			for _, dmr := range repoMRs[repoName] {
 				writeReleaseEntry(&sb, &dmr, mentionMap)
 			}
+		}
+	}
+
+	if len(blockedReviewMRs) > 0 {
+		sb.WriteString("\nBLOCKED:\n")
+		for _, dmr := range blockedReviewMRs {
+			writeDigestEntry(&sb, &dmr, mentionMap, activeReviewersMap[dmr.MR.ID])
 		}
 	}
 
