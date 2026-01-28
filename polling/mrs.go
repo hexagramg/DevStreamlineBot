@@ -305,7 +305,7 @@ func syncMRDiscussions(db *gorm.DB, client *gitlab.Client, projectID int, mrIID 
 					isResolved := note.Resolved
 
 					comment.ID = existingComment.ID
-					if err := db.Model(&existingComment).Updates(comment).Error; err != nil {
+					if err := db.Model(&existingComment).Select("*").Updates(comment).Error; err != nil {
 						log.Printf("Error updating comment for MR %d, note %d: %v", localMRID, note.ID, err)
 						continue
 					}
