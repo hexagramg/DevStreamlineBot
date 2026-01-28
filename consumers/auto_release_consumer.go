@@ -275,6 +275,12 @@ func (c *AutoReleaseConsumer) updateReleaseMRDescription(config models.AutoRelea
 		return
 	}
 
+	if err := c.db.Model(&models.MergeRequest{}).
+		Where("gitlab_id = ?", releaseMR.ID).
+		Update("description", newDescription).Error; err != nil {
+		log.Printf("Failed to update local MR description for GitLab MR %d: %v", releaseMR.ID, err)
+	}
+
 	log.Printf("Updated release MR !%d description with %d included MRs", releaseMR.IID, len(includedMRs))
 }
 
