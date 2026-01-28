@@ -30,6 +30,7 @@ Copy `config/config-example.yaml` to `config.yaml` in the project root and fill 
 - `gitlab.base_url`, `gitlab.token`, `gitlab.poll_interval`
 - `vk.base_url`, `vk.token`
 - `database.dsn` (SQLite file path)
+- `jira.base_url` (optional) - Jira instance URL for generating task links in release MR descriptions
 
 ## Code Style
 
@@ -90,6 +91,7 @@ Key entities with GORM:
 - `MRComment` - Tracked comments on MRs (resolvable/resolved status)
 - `MRAction` - Timeline of MR events for state tracking
 - `AutoReleaseBranchConfig` - Auto-release settings per repository (ReleaseBranchPrefix, DevBranchName)
+- `JiraProjectPrefix` - Links Repository to Jira project prefixes for task ID extraction
 
 ### Key Patterns
 
@@ -190,6 +192,10 @@ Key function: `FindUserActionMRs(db, userID)` returns MRs requiring action from 
 - `/add_block_label <label> [#color]` - Add block label(s) to repos (default: #dc143c)
 - `/add_release_label <label> [#color]` - Add release label to repos (default: #808080)
 - `/ensure_label <label> <#color>` - Create label in GitLab if it doesn't exist
+
+### Jira Integration
+- `/add_jira_prefix <PREFIX>` - Add Jira project prefix for task ID extraction (e.g., `INTDEV`)
+- `/add_jira_prefix` - List current Jira prefixes for subscribed repos
 
 ### Release Management
 - `/auto_release_branch <prefix> : <dev_branch>` - Enable auto-release branches (e.g., `release : develop`)

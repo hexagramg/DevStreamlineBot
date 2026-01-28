@@ -8,6 +8,9 @@ vk:
 database:
   dsn: "devstreamline.db"
 jira:
+  # Base URL for Jira instance. Used to generate clickable links
+  # in release MR descriptions when Jira task IDs are detected.
+  # Leave empty to disable Jira link generation.
   base_url: ""  # e.g., https://jira.example.com
 
 # Optional: Override start time for MR processing (format: YYYY-MM-DD)

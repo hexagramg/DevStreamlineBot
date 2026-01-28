@@ -82,6 +82,9 @@ vk:
 database:
   dsn: "devstreamline.db"  # SQLite database file path
 
+jira:
+  base_url: ""  # Optional: Jira instance URL for task linking
+
 # Optional: Override start time for MR processing (format: YYYY-MM-DD)
 # If not set, defaults to 2 days before bot startup
 # start_time: "2025-01-01"
@@ -97,6 +100,7 @@ database:
 | `vk.base_url` | VK Teams API base URL |
 | `vk.token` | VK Teams bot token |
 | `database.dsn` | Path to SQLite database file |
+| `jira.base_url` | Optional. Jira instance URL for generating clickable task links in release MR descriptions |
 | `start_time` | Optional. Only process MRs created after this date (YYYY-MM-DD) |
 
 ## Bot Commands
