@@ -44,6 +44,8 @@ func SetupTestDB(t *testing.T) *gorm.DB {
 		&models.ReleaseSubscription{},
 		&models.JiraProjectPrefix{},
 		&models.MRNotificationState{},
+		&models.DeployTrackingRule{},
+		&models.TrackedDeployJob{},
 	)
 	if err != nil {
 		t.Fatalf("failed to migrate test database: %v", err)
@@ -495,4 +497,30 @@ func CreateNotificationState(db *gorm.DB, mr models.MergeRequest, notifiedState 
 	}
 	db.Create(&ns)
 	return ns
+}
+
+func CreateDeployTrackingRule(db *gorm.DB, deployProjectPath string, deployProjectID int, jobName string, targetRepo models.Repository, chat models.Chat, vkUser models.VKUser) models.DeployTrackingRule {
+	rule := models.DeployTrackingRule{
+		DeployProjectPath:  deployProjectPath,
+		DeployProjectID:    deployProjectID,
+		JobName:            jobName,
+		TargetRepositoryID: targetRepo.ID,
+		ChatID:             chat.ID,
+		CreatedByID:        vkUser.ID,
+	}
+	db.Create(&rule)
+	return rule
+}
+
+func CreateTrackedDeployJob(db *gorm.DB, rule models.DeployTrackingRule, gitlabJobID int, status string) models.TrackedDeployJob {
+	tracked := models.TrackedDeployJob{
+		DeployTrackingRuleID: rule.ID,
+		GitlabJobID:         gitlabJobID,
+		Status:              status,
+		Ref:                 "main",
+		TriggeredBy:         "testuser",
+		WebURL:              fmt.Sprintf("https://gitlab.example.com/-/jobs/%d", gitlabJobID),
+	}
+	db.Create(&tracked)
+	return tracked
 }

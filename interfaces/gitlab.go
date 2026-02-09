@@ -36,3 +36,9 @@ type GitLabBranchesService interface {
 	GetBranch(pid interface{}, branch string, options ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error)
 	CreateBranch(pid interface{}, opt *gitlab.CreateBranchOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error)
 }
+
+// GitLabJobsService abstracts GitLab job operations for testing.
+type GitLabJobsService interface {
+	GetJob(pid interface{}, jobID int, options ...gitlab.RequestOptionFunc) (*gitlab.Job, *gitlab.Response, error)
+	ListProjectJobs(pid interface{}, opts *gitlab.ListJobsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.Job, *gitlab.Response, error)
+}

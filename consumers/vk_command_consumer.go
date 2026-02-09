@@ -97,6 +97,10 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleReleaseUnsubscribeCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/release_subscribe") {
 		c.handleReleaseSubscribeCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/untrack_deploy") {
+		c.handleUntrackDeployCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/track_deploy") {
+		c.handleTrackDeployCommand(msg, from)
 	}
 }
 
@@ -1979,6 +1983,159 @@ func (c *VKCommandConsumer) handleReleaseUnsubscribeCommand(msg *botgolang.Messa
 	}
 
 	c.sendReply(msg, fmt.Sprintf("Unsubscribed from release notifications for: %s", repo.Name))
+}
+
+// parseJobURL extracts the project path and job ID from a GitLab job URL.
+// Example: https://gitlab.corp.mail.ru/is-team/ansible/projects/joboffer/-/jobs/293024539
+// Returns: ("is-team/ansible/projects/joboffer", 293024539, nil)
+func parseJobURL(rawURL string) (projectPath string, jobID int, err error) {
+	// Find /-/jobs/<id> in the path
+	idx := strings.Index(rawURL, "/-/jobs/")
+	if idx == -1 {
+		return "", 0, fmt.Errorf("URL does not contain /-/jobs/ pattern")
+	}
+
+	jobIDStr := rawURL[idx+len("/-/jobs/"):]
+	// Trim any trailing path segments or query params
+	if i := strings.IndexAny(jobIDStr, "/?#"); i != -1 {
+		jobIDStr = jobIDStr[:i]
+	}
+	jobID, err = strconv.Atoi(jobIDStr)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid job ID: %s", jobIDStr)
+	}
+
+	// Extract project path: everything between the host and /-/jobs/
+	pathPart := rawURL[:idx]
+	// Remove scheme + host prefix
+	if schemeEnd := strings.Index(pathPart, "://"); schemeEnd != -1 {
+		pathPart = pathPart[schemeEnd+3:]
+		// Remove host
+		if slashIdx := strings.Index(pathPart, "/"); slashIdx != -1 {
+			pathPart = pathPart[slashIdx+1:]
+		} else {
+			return "", 0, fmt.Errorf("no project path found in URL")
+		}
+	}
+	pathPart = strings.Trim(pathPart, "/")
+	if pathPart == "" {
+		return "", 0, fmt.Errorf("empty project path in URL")
+	}
+	return pathPart, jobID, nil
+}
+
+func (c *VKCommandConsumer) handleTrackDeployCommand(msg *botgolang.Message, from botgolang.Contact) {
+	parts := strings.Fields(msg.Text)
+	if len(parts) < 3 {
+		c.sendReply(msg, "Usage: /track_deploy <pipeline_job_link> <target_gitlab_project_id>")
+		return
+	}
+	jobURL := parts[1]
+	targetProjectIDStr := parts[2]
+
+	deployProjectPath, jobID, err := parseJobURL(jobURL)
+	if err != nil {
+		c.sendReply(msg, fmt.Sprintf("Invalid job URL: %v", err))
+		return
+	}
+
+	targetProjectID, err := strconv.Atoi(targetProjectIDStr)
+	if err != nil {
+		c.sendReply(msg, fmt.Sprintf("Invalid target project ID: %s", targetProjectIDStr))
+		return
+	}
+
+	var targetRepo models.Repository
+	if err := c.db.Where("gitlab_id = ?", targetProjectID).First(&targetRepo).Error; err != nil {
+		c.sendReply(msg, fmt.Sprintf("Target repository with GitLab ID %d not found", targetProjectID))
+		return
+	}
+
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found. Subscribe to a repository first.")
+		return
+	}
+
+	job, _, err := c.glClient.Jobs.GetJob(deployProjectPath, jobID)
+	if err != nil {
+		c.sendReply(msg, fmt.Sprintf("Failed to fetch job from GitLab: %v", err))
+		return
+	}
+
+	var existingRule models.DeployTrackingRule
+	if err := c.db.Where(
+		"deploy_project_path = ? AND job_name = ? AND target_repository_id = ?",
+		deployProjectPath, job.Name, targetRepo.ID,
+	).First(&existingRule).Error; err == nil {
+		c.sendReply(msg, fmt.Sprintf("Deploy tracking already exists: job '%s' in '%s' → %s",
+			job.Name, deployProjectPath, targetRepo.Name))
+		return
+	}
+
+	userID := fmt.Sprint(from.ID)
+	var vkUser models.VKUser
+	vkUserData := models.VKUser{UserID: userID, FirstName: from.FirstName, LastName: from.LastName}
+	c.db.Where(models.VKUser{UserID: userID}).Assign(vkUserData).FirstOrCreate(&vkUser)
+
+	rule := models.DeployTrackingRule{
+		DeployProjectPath:  deployProjectPath,
+		DeployProjectID:    job.Pipeline.ProjectID,
+		JobName:            job.Name,
+		TargetRepositoryID: targetRepo.ID,
+		ChatID:             chat.ID,
+		CreatedByID:        vkUser.ID,
+	}
+	if err := c.db.Create(&rule).Error; err != nil {
+		log.Printf("failed to create deploy tracking rule: %v", err)
+		c.sendReply(msg, "Failed to create deploy tracking rule.")
+		return
+	}
+
+	c.sendReply(msg, fmt.Sprintf("Deploy tracking configured: job '%s' from '%s' → %s",
+		job.Name, deployProjectPath, targetRepo.Name))
+}
+
+func (c *VKCommandConsumer) handleUntrackDeployCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	parts := strings.Fields(msg.Text)
+	if len(parts) < 2 {
+		c.sendReply(msg, "Usage: /untrack_deploy <gitlab_project_id>")
+		return
+	}
+
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found.")
+		return
+	}
+
+	projectID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		c.sendReply(msg, fmt.Sprintf("Invalid project ID: %s", parts[1]))
+		return
+	}
+
+	var repo models.Repository
+	if err := c.db.Where("gitlab_id = ?", projectID).First(&repo).Error; err != nil {
+		c.sendReply(msg, fmt.Sprintf("Repository with GitLab ID %d not found", projectID))
+		return
+	}
+
+	var rules []models.DeployTrackingRule
+	c.db.Where("target_repository_id = ? AND chat_id = ?", repo.ID, chat.ID).Find(&rules)
+	if len(rules) == 0 {
+		c.sendReply(msg, fmt.Sprintf("No deploy tracking rules found for %s in this chat.", repo.Name))
+		return
+	}
+
+	for _, rule := range rules {
+		c.db.Where("deploy_tracking_rule_id = ?", rule.ID).Delete(&models.TrackedDeployJob{})
+		c.db.Delete(&rule)
+	}
+
+	c.sendReply(msg, fmt.Sprintf("Removed %d deploy tracking rule(s) for %s.", len(rules), repo.Name))
 }
 
 func (c *VKCommandConsumer) sendReply(msg *botgolang.Message, text string) {

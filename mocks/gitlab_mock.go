@@ -300,3 +300,38 @@ func (m *MockBranchesService) CreateBranch(pid interface{}, opt *gitlab.CreateBr
 	}
 	return nil, NewMockResponse(0), nil
 }
+
+// MockJobsService is a mock implementation of GitLabJobsService.
+type MockJobsService struct {
+	GetJobFunc          func(pid interface{}, jobID int, options ...gitlab.RequestOptionFunc) (*gitlab.Job, *gitlab.Response, error)
+	ListProjectJobsFunc func(pid interface{}, opts *gitlab.ListJobsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.Job, *gitlab.Response, error)
+
+	GetJobCalls          []GetJobCall
+	ListProjectJobsCalls []ListProjectJobsCall
+}
+
+type GetJobCall struct {
+	PID   interface{}
+	JobID int
+}
+
+type ListProjectJobsCall struct {
+	PID  interface{}
+	Opts *gitlab.ListJobsOptions
+}
+
+func (m *MockJobsService) GetJob(pid interface{}, jobID int, options ...gitlab.RequestOptionFunc) (*gitlab.Job, *gitlab.Response, error) {
+	m.GetJobCalls = append(m.GetJobCalls, GetJobCall{PID: pid, JobID: jobID})
+	if m.GetJobFunc != nil {
+		return m.GetJobFunc(pid, jobID, options...)
+	}
+	return nil, NewMockResponse(0), nil
+}
+
+func (m *MockJobsService) ListProjectJobs(pid interface{}, opts *gitlab.ListJobsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.Job, *gitlab.Response, error) {
+	m.ListProjectJobsCalls = append(m.ListProjectJobsCalls, ListProjectJobsCall{PID: pid, Opts: opts})
+	if m.ListProjectJobsFunc != nil {
+		return m.ListProjectJobsFunc(pid, opts, options...)
+	}
+	return nil, NewMockResponse(0), nil
+}

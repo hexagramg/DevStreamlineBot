@@ -63,6 +63,7 @@ func main() {
 		&models.DailyDigestPreference{}, &models.BlockLabel{}, &models.ReleaseManager{}, &models.ReleaseLabel{},
 		&models.AutoReleaseBranchConfig{}, &models.ReleaseReadyLabel{}, &models.JiraProjectPrefix{},
 		&models.ReleaseSubscription{}, &models.MRNotificationState{},
+		&models.DeployTrackingRule{}, &models.TrackedDeployJob{},
 	); err != nil {
 		log.Fatalf("failed to migrate database schemas: %v", err)
 	}
@@ -145,6 +146,8 @@ func main() {
 
 	releaseNotificationConsumer := consumers.NewReleaseNotificationConsumer(db, vkBot)
 
+	deployTrackingConsumer := consumers.NewDeployTrackingConsumer(db, vkBot, glClient)
+
 	go func() {
 		ticker := time.NewTicker(cfg.Gitlab.PollInterval)
 		defer ticker.Stop()
@@ -161,6 +164,7 @@ func main() {
 			autoReleaseConsumer.ProcessReleaseMRDescriptions()
 			releaseNotificationConsumer.ProcessNewReleaseNotifications()
 			releaseNotificationConsumer.ProcessReleaseMRDescriptionChanges()
+			deployTrackingConsumer.PollDeployJobs()
 		}
 	}()
 

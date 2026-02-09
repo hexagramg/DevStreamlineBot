@@ -423,3 +423,35 @@ type MRNotificationState struct {
 	NotifiedState       string       `gorm:"type:varchar(20)"`
 	NotifiedDescription string       `gorm:"type:text"`
 }
+
+// DeployTrackingRule links a deploy project's job name to a target repository.
+// When the deploy project runs a job matching JobName, notifications are sent
+// to the target repository's ReleaseSubscription chats.
+type DeployTrackingRule struct {
+	gorm.Model
+	DeployProjectPath  string     `gorm:"not null;uniqueIndex:idx_deploy_rule,priority:1"`
+	DeployProjectID    int        `gorm:"not null"`
+	JobName            string     `gorm:"not null;uniqueIndex:idx_deploy_rule,priority:2"`
+	TargetRepositoryID uint       `gorm:"not null;uniqueIndex:idx_deploy_rule,priority:3"`
+	TargetRepository   Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	ChatID             uint       `gorm:"not null"`
+	Chat               Chat
+	CreatedByID        uint `gorm:"not null"`
+	CreatedBy          VKUser
+}
+
+// TrackedDeployJob tracks an individual GitLab job instance and its notification state.
+type TrackedDeployJob struct {
+	gorm.Model
+	DeployTrackingRuleID uint               `gorm:"not null;index"`
+	DeployTrackingRule   DeployTrackingRule  `gorm:"constraint:OnDelete:CASCADE;"`
+	GitlabJobID          int                `gorm:"not null;uniqueIndex"`
+	Status               string             `gorm:"not null"`
+	Ref                  string
+	TriggeredBy          string
+	WebURL               string
+	StartedAt            *time.Time
+	FinishedAt           *time.Time
+	NotifiedRunning      bool `gorm:"default:false"`
+	NotifiedFinished     bool `gorm:"default:false"`
+}
