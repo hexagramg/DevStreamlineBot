@@ -297,10 +297,10 @@ func TestProcessNewReleaseNotifications_HappyPath(t *testing.T) {
 		t.Error("Action should be marked as notified")
 	}
 
-	var updatedMR models.MergeRequest
-	db.First(&updatedMR, mr.ID)
-	if updatedMR.LastNotifiedDescription == "" {
-		t.Error("LastNotifiedDescription should be updated")
+	var updatedState models.MRNotificationState
+	db.Where("merge_request_id = ?", mr.ID).Order("created_at desc").First(&updatedState)
+	if updatedState.NotifiedDescription == "" {
+		t.Error("NotifiedDescription should be updated in notification state")
 	}
 }
 
@@ -601,10 +601,8 @@ func TestProcessReleaseMRDescriptionChanges_NoDescriptionChange(t *testing.T) {
 	mr := mrFactory.Create(repo, author, testutils.WithMRState("opened"), testutils.WithLabels(db, "release", "release-ready"))
 
 	desc := "- [MR](https://gitlab.com/g/p/-/merge_requests/1)"
-	db.Model(&mr).Updates(map[string]interface{}{
-		"description":               desc,
-		"last_notified_description": desc,
-	})
+	db.Model(&mr).Update("description", desc)
+	testutils.CreateNotificationState(db, mr, "", desc)
 
 	testutils.CreateReleaseLabel(db, repo, "release")
 	testutils.CreateReleaseReadyLabel(db, repo, "release-ready")
@@ -635,10 +633,8 @@ func TestProcessReleaseMRDescriptionChanges_ChangeButNoNewEntries(t *testing.T) 
 
 	oldDesc := "- [MR](https://gitlab.com/g/p/-/merge_requests/1)"
 	newDesc := "- [Updated MR](https://gitlab.com/g/p/-/merge_requests/1)"
-	db.Model(&mr).Updates(map[string]interface{}{
-		"description":               newDesc,
-		"last_notified_description": oldDesc,
-	})
+	db.Model(&mr).Update("description", newDesc)
+	testutils.CreateNotificationState(db, mr, "", oldDesc)
 
 	testutils.CreateReleaseLabel(db, repo, "release")
 	testutils.CreateReleaseReadyLabel(db, repo, "release-ready")
@@ -652,10 +648,10 @@ func TestProcessReleaseMRDescriptionChanges_ChangeButNoNewEntries(t *testing.T) 
 		t.Errorf("Expected no messages (no new entries), got %d", len(sentMessages))
 	}
 
-	var updatedMR models.MergeRequest
-	db.First(&updatedMR, mr.ID)
-	if updatedMR.LastNotifiedDescription != newDesc {
-		t.Error("LastNotifiedDescription should be updated even without new entries")
+	var updatedState models.MRNotificationState
+	db.Where("merge_request_id = ?", mr.ID).Order("created_at desc").First(&updatedState)
+	if updatedState.NotifiedDescription != newDesc {
+		t.Error("NotifiedDescription should be updated even without new entries")
 	}
 }
 
@@ -675,10 +671,8 @@ func TestProcessReleaseMRDescriptionChanges_HappyPath(t *testing.T) {
 
 	oldDesc := "- [MR 1](https://gitlab.com/g/p/-/merge_requests/1)"
 	newDesc := "- [MR 1](https://gitlab.com/g/p/-/merge_requests/1)\n- [MR 2](https://gitlab.com/g/p/-/merge_requests/2)"
-	db.Model(&mr).Updates(map[string]interface{}{
-		"description":               newDesc,
-		"last_notified_description": oldDesc,
-	})
+	db.Model(&mr).Update("description", newDesc)
+	testutils.CreateNotificationState(db, mr, "", oldDesc)
 
 	testutils.CreateReleaseLabel(db, repo, "release")
 	testutils.CreateReleaseReadyLabel(db, repo, "release-ready")
@@ -702,10 +696,10 @@ func TestProcessReleaseMRDescriptionChanges_HappyPath(t *testing.T) {
 		t.Error("Message should contain the new entry")
 	}
 
-	var updatedMR models.MergeRequest
-	db.First(&updatedMR, mr.ID)
-	if updatedMR.LastNotifiedDescription != newDesc {
-		t.Error("LastNotifiedDescription should be updated")
+	var updatedState models.MRNotificationState
+	db.Where("merge_request_id = ?", mr.ID).Order("created_at desc").First(&updatedState)
+	if updatedState.NotifiedDescription != newDesc {
+		t.Error("NotifiedDescription should be updated")
 	}
 }
 
@@ -724,10 +718,8 @@ func TestProcessReleaseMRDescriptionChanges_MessageFormat(t *testing.T) {
 	mr := mrFactory.Create(repo, author, testutils.WithMRState("opened"), testutils.WithLabels(db, "release", "release-ready"))
 
 	newDesc := "- [Feature A](https://gitlab.com/g/p/-/merge_requests/100)"
-	db.Model(&mr).Updates(map[string]interface{}{
-		"description":               newDesc,
-		"last_notified_description": "some old content",
-	})
+	db.Model(&mr).Update("description", newDesc)
+	testutils.CreateNotificationState(db, mr, "", "some old content")
 
 	testutils.CreateReleaseLabel(db, repo, "release")
 	testutils.CreateReleaseReadyLabel(db, repo, "release-ready")
@@ -778,14 +770,10 @@ func TestProcessReleaseMRDescriptionChanges_MultipleRepos(t *testing.T) {
 	testutils.CreateReleaseSubscription(db, repo1, chatFactory.Create(), vkUserFactory.Create())
 	testutils.CreateReleaseSubscription(db, repo2, chatFactory.Create(), vkUserFactory.Create())
 
-	db.Model(&mr1).Updates(map[string]interface{}{
-		"description":               "- [MR](https://gitlab.com/g/p/-/merge_requests/1)",
-		"last_notified_description": "old",
-	})
-	db.Model(&mr2).Updates(map[string]interface{}{
-		"description":               "- [MR](https://gitlab.com/g/p/-/merge_requests/2)",
-		"last_notified_description": "old",
-	})
+	db.Model(&mr1).Update("description", "- [MR](https://gitlab.com/g/p/-/merge_requests/1)")
+	testutils.CreateNotificationState(db, mr1, "", "old")
+	db.Model(&mr2).Update("description", "- [MR](https://gitlab.com/g/p/-/merge_requests/2)")
+	testutils.CreateNotificationState(db, mr2, "", "old")
 
 	consumer := NewReleaseNotificationConsumerWithBot(db, mockBot)
 	consumer.ProcessReleaseMRDescriptionChanges()
@@ -818,10 +806,8 @@ func TestProcessReleaseMRDescriptionChanges_DuplicateRepoSubscriptions(t *testin
 	testutils.CreateReleaseSubscription(db, repo, chat1, vkUserFactory.Create())
 	testutils.CreateReleaseSubscription(db, repo, chat2, vkUserFactory.Create())
 
-	db.Model(&mr).Updates(map[string]interface{}{
-		"description":               "- [MR](https://gitlab.com/g/p/-/merge_requests/1)",
-		"last_notified_description": "old",
-	})
+	db.Model(&mr).Update("description", "- [MR](https://gitlab.com/g/p/-/merge_requests/1)")
+	testutils.CreateNotificationState(db, mr, "", "old")
 
 	consumer := NewReleaseNotificationConsumerWithBot(db, mockBot)
 	consumer.ProcessReleaseMRDescriptionChanges()

@@ -763,7 +763,7 @@ func TestStateChange_OnReviewToOnFixes(t *testing.T) {
 	testutils.AssignReviewers(db, &mr, reviewer)
 
 	// Set initial state to on_review (simulating previous notification)
-	db.Model(&mr).Update("last_notified_state", "on_review")
+	testutils.CreateNotificationState(db, mr, "on_review", "")
 
 	// Create unresolved resolvable comment (triggers on_fixes state)
 	comment := testutils.CreateMRComment(db, mr, reviewer, 123, testutils.WithResolvable())
@@ -789,11 +789,11 @@ func TestStateChange_OnReviewToOnFixes(t *testing.T) {
 		t.Error("Expected fixes notification with 🔧 emoji")
 	}
 
-	// Verify LastNotifiedState updated
-	var updatedMR models.MergeRequest
-	db.First(&updatedMR, mr.ID)
-	if updatedMR.LastNotifiedState != "on_fixes" {
-		t.Errorf("Expected LastNotifiedState='on_fixes', got '%s'", updatedMR.LastNotifiedState)
+	// Verify NotifiedState updated
+	var updatedState models.MRNotificationState
+	db.Where("merge_request_id = ?", mr.ID).Order("created_at desc").First(&updatedState)
+	if updatedState.NotifiedState != "on_fixes" {
+		t.Errorf("Expected NotifiedState='on_fixes', got '%s'", updatedState.NotifiedState)
 	}
 }
 
@@ -813,7 +813,7 @@ func TestStateChange_OnFixesToOnReview(t *testing.T) {
 	testutils.AssignReviewers(db, &mr, reviewer)
 
 	// Set LastNotifiedState to on_fixes (simulating previous notification)
-	db.Model(&mr).Update("last_notified_state", "on_fixes")
+	testutils.CreateNotificationState(db, mr, "on_fixes", "")
 
 	// Create RESOLVED comment (MR is now on_review)
 	comment := testutils.CreateMRComment(db, mr, reviewer, 123,
@@ -842,11 +842,11 @@ func TestStateChange_OnFixesToOnReview(t *testing.T) {
 		t.Error("Expected re-review notification message")
 	}
 
-	// Verify LastNotifiedState updated
-	var updatedMR models.MergeRequest
-	db.First(&updatedMR, mr.ID)
-	if updatedMR.LastNotifiedState != "on_review" {
-		t.Errorf("Expected LastNotifiedState='on_review', got '%s'", updatedMR.LastNotifiedState)
+	// Verify NotifiedState updated
+	var updatedState models.MRNotificationState
+	db.Where("merge_request_id = ?", mr.ID).Order("created_at desc").First(&updatedState)
+	if updatedState.NotifiedState != "on_review" {
+		t.Errorf("Expected NotifiedState='on_review', got '%s'", updatedState.NotifiedState)
 	}
 }
 
@@ -866,7 +866,7 @@ func TestNoNotification_AlreadyOnFixes(t *testing.T) {
 	testutils.AssignReviewers(db, &mr, reviewer)
 
 	// Set LastNotifiedState to on_fixes (already notified)
-	db.Model(&mr).Update("last_notified_state", "on_fixes")
+	testutils.CreateNotificationState(db, mr, "on_fixes", "")
 
 	// Create unresolved comment (still on_fixes)
 	comment := testutils.CreateMRComment(db, mr, reviewer, 123, testutils.WithResolvable())
@@ -910,7 +910,7 @@ func TestNoNotification_AlreadyOnReview(t *testing.T) {
 	testutils.AssignReviewers(db, &mr, reviewer)
 
 	// Set LastNotifiedState to on_review (already notified)
-	db.Model(&mr).Update("last_notified_state", "on_review")
+	testutils.CreateNotificationState(db, mr, "on_review", "")
 
 	// No unresolved comments, so MR is on_review
 	// Create a resolved comment action
@@ -959,7 +959,7 @@ func TestMultipleReviewers_AllNotified(t *testing.T) {
 	testutils.AssignReviewers(db, &mr, reviewer1, reviewer2, reviewer3)
 
 	// Set LastNotifiedState to on_fixes
-	db.Model(&mr).Update("last_notified_state", "on_fixes")
+	testutils.CreateNotificationState(db, mr, "on_fixes", "")
 
 	// Create resolved comment (MR is now on_review)
 	comment := testutils.CreateMRComment(db, mr, reviewer1, 123,
@@ -1009,7 +1009,7 @@ func TestBatchProcessing_MultipleMRs(t *testing.T) {
 	// MR1: on_review -> on_fixes (notify author1)
 	mr1 := mrFactory.Create(repo, author1)
 	testutils.AssignReviewers(db, &mr1, reviewer)
-	db.Model(&mr1).Update("last_notified_state", "on_review")
+	testutils.CreateNotificationState(db, mr1, "on_review", "")
 	comment1 := testutils.CreateMRComment(db, mr1, reviewer, 101, testutils.WithResolvable())
 	testutils.CreateMRAction(db, mr1, models.ActionCommentAdded,
 		testutils.WithActor(reviewer),
@@ -1019,7 +1019,7 @@ func TestBatchProcessing_MultipleMRs(t *testing.T) {
 	// MR2: on_review -> on_fixes (notify author2)
 	mr2 := mrFactory.Create(repo, author2)
 	testutils.AssignReviewers(db, &mr2, reviewer)
-	db.Model(&mr2).Update("last_notified_state", "on_review")
+	testutils.CreateNotificationState(db, mr2, "on_review", "")
 	comment2 := testutils.CreateMRComment(db, mr2, reviewer, 102, testutils.WithResolvable())
 	testutils.CreateMRAction(db, mr2, models.ActionCommentAdded,
 		testutils.WithActor(reviewer),
@@ -1559,7 +1559,7 @@ func TestStateChange_OnlyUnapprovedReviewersNotified(t *testing.T) {
 	// reviewer1 has approved, reviewer2 has not
 	testutils.AssignApprovers(db, &mr, reviewer1)
 
-	db.Model(&mr).Update("last_notified_state", "on_fixes")
+	testutils.CreateNotificationState(db, mr, "on_fixes", "")
 
 	comment := testutils.CreateMRComment(db, mr, reviewer1, 123,
 		testutils.WithResolvable(),
@@ -1602,7 +1602,7 @@ func TestStateChange_AllReviewersApproved_NoReReviewNotification(t *testing.T) {
 	// Both reviewers have approved
 	testutils.AssignApprovers(db, &mr, reviewer1, reviewer2)
 
-	db.Model(&mr).Update("last_notified_state", "on_fixes")
+	testutils.CreateNotificationState(db, mr, "on_fixes", "")
 
 	comment := testutils.CreateMRComment(db, mr, reviewer1, 123,
 		testutils.WithResolvable(),
@@ -1640,7 +1640,7 @@ func TestOldActions_NotProcessed(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author)
 	testutils.AssignReviewers(db, &mr, reviewer)
-	db.Model(&mr).Update("last_notified_state", "on_review")
+	testutils.CreateNotificationState(db, mr, "on_review", "")
 
 	// Create unresolved comment
 	comment := testutils.CreateMRComment(db, mr, reviewer, 123, testutils.WithResolvable())
@@ -1728,7 +1728,7 @@ func TestMultipleStateTransitions_OnlyCurrentStateNotified(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author)
 	testutils.AssignReviewers(db, &mr, reviewer)
-	db.Model(&mr).Update("last_notified_state", "on_review")
+	testutils.CreateNotificationState(db, mr, "on_review", "")
 
 	// Create comment that was added then resolved (rapid transition)
 	comment := testutils.CreateMRComment(db, mr, reviewer, 123,
@@ -1772,7 +1772,7 @@ func TestNoSpam_SameStateDifferentActions(t *testing.T) {
 
 	mr := mrFactory.Create(repo, author)
 	testutils.AssignReviewers(db, &mr, reviewer)
-	db.Model(&mr).Update("last_notified_state", "on_review")
+	testutils.CreateNotificationState(db, mr, "on_review", "")
 
 	// Create 5 unresolved comments (all cause on_fixes state)
 	var actions []models.MRAction

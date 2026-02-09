@@ -1,6 +1,7 @@
 package consumers
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -99,11 +100,10 @@ func (c *ReleaseNotificationConsumer) processNewReleaseAction(action models.MRAc
 		}
 	}
 
-	if err := c.db.Model(&models.MergeRequest{}).
-		Where("id = ?", mr.ID).
-		Update("last_notified_description", mr.Description).Error; err != nil {
-		log.Printf("failed to update last_notified_description for MR %d: %v", mr.ID, err)
-	}
+	c.db.Create(&models.MRNotificationState{
+		MergeRequestID:  mr.ID,
+		NotifiedDescription: mr.Description,
+	})
 
 	c.markActionNotified(action.ID)
 	log.Printf("Sent new release notification for MR %d (%s) to %d chats", mr.ID, repo.Name, len(subs))
@@ -166,24 +166,32 @@ func (c *ReleaseNotificationConsumer) processRepoDescriptionChanges(repoID uint)
 		return
 	}
 
-	if releaseMR.LastNotifiedDescription == "" {
-		c.db.Model(&models.MergeRequest{}).
-			Where("id = ?", releaseMR.ID).
-			Update("last_notified_description", releaseMR.Description)
+	var latest models.MRNotificationState
+	err := c.db.Where("merge_request_id = ?", releaseMR.ID).
+		Order("created_at desc").First(&latest).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.db.Create(&models.MRNotificationState{
+			MergeRequestID:  releaseMR.ID,
+			NotifiedDescription: releaseMR.Description,
+		})
+		return
+	}
+	if err != nil {
+		log.Printf("failed to get notification state for MR %d: %v", releaseMR.ID, err)
 		return
 	}
 
-	if releaseMR.Description == releaseMR.LastNotifiedDescription {
+	if releaseMR.Description == latest.NotifiedDescription {
 		return
 	}
 
-	newEntries := extractNewEntries(releaseMR.LastNotifiedDescription, releaseMR.Description)
+	newEntries := extractNewEntries(latest.NotifiedDescription, releaseMR.Description)
 	if len(newEntries) == 0 {
-		if err := c.db.Model(&models.MergeRequest{}).
-			Where("id = ?", releaseMR.ID).
-			Update("last_notified_description", releaseMR.Description).Error; err != nil {
-			log.Printf("failed to update last_notified_description for MR %d: %v", releaseMR.ID, err)
-		}
+		c.db.Create(&models.MRNotificationState{
+			MergeRequestID:      releaseMR.ID,
+			NotifiedState:       latest.NotifiedState,
+			NotifiedDescription: releaseMR.Description,
+		})
 		return
 	}
 
@@ -200,7 +208,11 @@ func (c *ReleaseNotificationConsumer) processRepoDescriptionChanges(repoID uint)
 		return
 	}
 
-	message := fmt.Sprintf("Добавлена задача в релиз %s\n%s", repo.Name, strings.Join(newEntries, "\n"))
+	header := "Добавлена задача в релиз"
+	if len(newEntries) > 1 {
+		header = "Добавлены задачи в релиз"
+	}
+	message := fmt.Sprintf("%s %s\n%s", header, repo.Name, strings.Join(newEntries, "\n"))
 
 	for _, sub := range subs {
 		msg := c.vkBot.NewMarkdownMessage(sub.Chat.ChatID, message)
@@ -209,11 +221,11 @@ func (c *ReleaseNotificationConsumer) processRepoDescriptionChanges(repoID uint)
 		}
 	}
 
-	if err := c.db.Model(&models.MergeRequest{}).
-		Where("id = ?", releaseMR.ID).
-		Update("last_notified_description", releaseMR.Description).Error; err != nil {
-		log.Printf("failed to update last_notified_description for MR %d: %v", releaseMR.ID, err)
-	}
+	c.db.Create(&models.MRNotificationState{
+		MergeRequestID:      releaseMR.ID,
+		NotifiedState:       latest.NotifiedState,
+		NotifiedDescription: releaseMR.Description,
+	})
 
 	log.Printf("Sent release update notification for MR %d (%s) with %d new entries", releaseMR.ID, repo.Name, len(newEntries))
 }

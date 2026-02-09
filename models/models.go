@@ -412,3 +412,14 @@ type ReleaseSubscription struct {
 	VKUser       VKUser
 	SubscribedAt time.Time `gorm:"not null"`
 }
+
+// MRNotificationState tracks notification state separately from MergeRequest
+// to prevent the MR sync loop from clobbering notification tracking fields.
+// Append-only: each notification writes a new row; query latest by created_at desc.
+type MRNotificationState struct {
+	gorm.Model
+	MergeRequestID      uint         `gorm:"not null;index"`
+	MergeRequest        MergeRequest `gorm:"constraint:OnDelete:CASCADE;"`
+	NotifiedState       string       `gorm:"type:varchar(20)"`
+	NotifiedDescription string       `gorm:"type:text"`
+}

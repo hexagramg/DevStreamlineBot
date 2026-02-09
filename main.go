@@ -62,7 +62,7 @@ func main() {
 		&models.LabelReviewer{}, &models.RepositorySLA{}, &models.Holiday{}, &models.MRAction{}, &models.MRComment{},
 		&models.DailyDigestPreference{}, &models.BlockLabel{}, &models.ReleaseManager{}, &models.ReleaseLabel{},
 		&models.AutoReleaseBranchConfig{}, &models.ReleaseReadyLabel{}, &models.JiraProjectPrefix{},
-		&models.ReleaseSubscription{},
+		&models.ReleaseSubscription{}, &models.MRNotificationState{},
 	); err != nil {
 		log.Fatalf("failed to migrate database schemas: %v", err)
 	}

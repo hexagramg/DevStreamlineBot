@@ -43,6 +43,7 @@ func SetupTestDB(t *testing.T) *gorm.DB {
 		&models.ReleaseReadyLabel{},
 		&models.ReleaseSubscription{},
 		&models.JiraProjectPrefix{},
+		&models.MRNotificationState{},
 	)
 	if err != nil {
 		t.Fatalf("failed to migrate test database: %v", err)
@@ -477,4 +478,14 @@ func CreateJiraProjectPrefix(db *gorm.DB, repo models.Repository, prefix string)
 	}
 	db.Create(&jp)
 	return jp
+}
+
+func CreateNotificationState(db *gorm.DB, mr models.MergeRequest, notifiedState string, notifiedDescription string) models.MRNotificationState {
+	ns := models.MRNotificationState{
+		MergeRequestID:  mr.ID,
+		NotifiedState:       notifiedState,
+		NotifiedDescription: notifiedDescription,
+	}
+	db.Create(&ns)
+	return ns
 }

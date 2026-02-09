@@ -1,6 +1,7 @@
 package consumers
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -553,9 +554,13 @@ func (c *MRReviewerConsumer) AssignReviewers() {
 			continue
 		}
 
-		// Initialize LastNotifiedState so state change notifications work correctly
-		if mr.LastNotifiedState == "" {
-			c.db.Model(&mr).Update("last_notified_state", "on_review")
+		var latestNotif models.MRNotificationState
+		if err := c.db.Where("merge_request_id = ?", mr.ID).
+			Order("created_at desc").First(&latestNotif).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			c.db.Create(&models.MRNotificationState{
+				MergeRequestID: mr.ID,
+				NotifiedState:  "on_review",
+			})
 		}
 
 		var subs []models.RepositorySubscription
@@ -758,7 +763,18 @@ func (c *MRReviewerConsumer) ProcessStateChangeNotifications() {
 
 		currentState := string(utils.GetStateInfo(c.db, &mr).State)
 
-		if currentState != mr.LastNotifiedState {
+		var latestNotif models.MRNotificationState
+		notifErr := c.db.Where("merge_request_id = ?", mr.ID).
+			Order("created_at desc").First(&latestNotif).Error
+		if notifErr != nil && !errors.Is(notifErr, gorm.ErrRecordNotFound) {
+			log.Printf("failed to get notification state for MR %d: %v", mr.ID, notifErr)
+			for _, action := range actionList {
+				c.markActionNotified(action.ID)
+			}
+			continue
+		}
+
+		if currentState != latestNotif.NotifiedState {
 			switch utils.MRState(currentState) {
 			case utils.StateOnFixes:
 				c.notifyUserDM(mr.Author.Email, fmt.Sprintf(
@@ -769,7 +785,7 @@ func (c *MRReviewerConsumer) ProcessStateChangeNotifications() {
 				))
 
 			case utils.StateOnReview:
-				if mr.LastNotifiedState == string(utils.StateOnFixes) {
+				if latestNotif.NotifiedState == string(utils.StateOnFixes) {
 					approverIDs := make(map[uint]bool)
 					for _, approver := range mr.Approvers {
 						approverIDs[approver.ID] = true
@@ -788,9 +804,11 @@ func (c *MRReviewerConsumer) ProcessStateChangeNotifications() {
 				}
 			}
 
-			if err := c.db.Model(&mr).Update("last_notified_state", currentState).Error; err != nil {
-				log.Printf("failed to update last_notified_state for MR %d: %v", mr.ID, err)
-			}
+			c.db.Create(&models.MRNotificationState{
+				MergeRequestID:      mr.ID,
+				NotifiedState:       currentState,
+				NotifiedDescription: latestNotif.NotifiedDescription,
+			})
 		}
 
 		for _, action := range actionList {
