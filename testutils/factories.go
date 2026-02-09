@@ -367,6 +367,13 @@ func WithDiscussionID(id string) CommentOption {
 	return func(c *models.MRComment) { c.GitlabDiscussionID = id }
 }
 
+func WithCommentCreatedAt(t time.Time) CommentOption {
+	return func(c *models.MRComment) {
+		c.GitlabCreatedAt = t
+		c.GitlabUpdatedAt = t
+	}
+}
+
 func CreateMRComment(db *gorm.DB, mr models.MergeRequest, author models.User, noteID int, opts ...CommentOption) models.MRComment {
 	comment := models.MRComment{
 		MergeRequestID:     mr.ID,

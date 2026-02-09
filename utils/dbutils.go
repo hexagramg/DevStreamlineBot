@@ -169,11 +169,20 @@ func FindUserActionMRs(db *gorm.DB, userID uint) (reviewMRs []DigestMR, fixesMRs
 		Where(`NOT EXISTS (
 			SELECT 1 FROM mr_comments mc
 			WHERE mc.merge_request_id = merge_requests.id
-			  AND mc.thread_starter_id = ?
 			  AND mc.is_last_in_thread = ?
 			  AND mc.author_id != merge_requests.author_id
 			  AND EXISTS (SELECT 1 FROM mr_comments starter WHERE starter.gitlab_discussion_id = mc.gitlab_discussion_id AND starter.resolvable = ? AND starter.resolved = ?)
-		)`, userID, true, true, false).
+			  AND EXISTS (
+				SELECT 1 FROM mr_comments rc
+				WHERE rc.gitlab_discussion_id = mc.gitlab_discussion_id
+				  AND rc.author_id = ?
+				  AND rc.gitlab_created_at > COALESCE(
+					(SELECT MAX(ac.gitlab_created_at) FROM mr_comments ac
+					 WHERE ac.gitlab_discussion_id = mc.gitlab_discussion_id
+					   AND ac.author_id = merge_requests.author_id),
+					'0001-01-01')
+			  )
+		)`, true, true, false, userID).
 		Find(&reviewerMRs).Error
 	if err != nil {
 		return nil, nil, nil, err
@@ -315,27 +324,11 @@ func calculateUserWorkingTimeFromCache(mr *models.MergeRequest, stateSince *time
 
 // GetActiveReviewers returns active reviewers for each MR.
 // A reviewer is active if they: are assigned, haven't approved, and have no unresolved threads
-// where they are the last commenter (waiting for author to respond).
+// where they participated after the MR author's last reply (waiting for author to respond).
 func GetActiveReviewers(db *gorm.DB, mrIDs []uint) (map[uint][]models.User, error) {
 	result := make(map[uint][]models.User)
 	if len(mrIDs) == 0 {
 		return result, nil
-	}
-
-	type MRAuthorRow struct {
-		ID       uint `gorm:"column:id"`
-		AuthorID uint `gorm:"column:author_id"`
-	}
-	var mrAuthors []MRAuthorRow
-	if err := db.Table("merge_requests").
-		Select("id, author_id").
-		Where("id IN ?", mrIDs).
-		Scan(&mrAuthors).Error; err != nil {
-		return nil, err
-	}
-	mrAuthorMap := make(map[uint]uint)
-	for _, row := range mrAuthors {
-		mrAuthorMap[row.ID] = row.AuthorID
 	}
 
 	type ReviewerRow struct {
@@ -365,30 +358,44 @@ func GetActiveReviewers(db *gorm.DB, mrIDs []uint) (map[uint][]models.User, erro
 		approverSet[row.MergeRequestID][row.UserID] = true
 	}
 
-	type ThreadRow struct {
-		MergeRequestID  uint `gorm:"column:merge_request_id"`
-		ThreadStarterID uint `gorm:"column:thread_starter_id"`
-		AuthorID        uint `gorm:"column:author_id"`
+	type WaitingReviewerRow struct {
+		MergeRequestID    uint `gorm:"column:merge_request_id"`
+		WaitingReviewerID uint `gorm:"column:waiting_reviewer_id"`
 	}
-	var threadRows []ThreadRow
-	if err := db.Table("mr_comments").
-		Select("merge_request_id, thread_starter_id, author_id").
-		Where(`merge_request_id IN ? AND is_last_in_thread = ? AND thread_starter_id IS NOT NULL
-			AND EXISTS (SELECT 1 FROM mr_comments starter WHERE starter.gitlab_discussion_id = mr_comments.gitlab_discussion_id AND starter.resolvable = ? AND starter.resolved = ?)`,
-			mrIDs, true, true, false).
-		Scan(&threadRows).Error; err != nil {
+	var waitingRows []WaitingReviewerRow
+	if err := db.Raw(`
+		SELECT DISTINCT rc.merge_request_id, rc.author_id as waiting_reviewer_id
+		FROM mr_comments rc
+		JOIN merge_requests mr ON mr.id = rc.merge_request_id
+		WHERE rc.merge_request_id IN ?
+		  AND rc.author_id != mr.author_id
+		  AND EXISTS (
+			SELECT 1 FROM mr_comments starter
+			WHERE starter.gitlab_discussion_id = rc.gitlab_discussion_id
+			  AND starter.resolvable = ? AND starter.resolved = ?
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM mr_comments last_c
+			WHERE last_c.gitlab_discussion_id = rc.gitlab_discussion_id
+			  AND last_c.is_last_in_thread = ?
+			  AND last_c.author_id != mr.author_id
+		  )
+		  AND rc.gitlab_created_at > COALESCE(
+			(SELECT MAX(ac.gitlab_created_at) FROM mr_comments ac
+			 WHERE ac.gitlab_discussion_id = rc.gitlab_discussion_id
+			   AND ac.author_id = mr.author_id),
+			'0001-01-01'
+		  )
+	`, mrIDs, true, false, true).Scan(&waitingRows).Error; err != nil {
 		return nil, err
 	}
 
 	hasThreadAwaitingAuthor := make(map[uint]map[uint]bool)
-	for _, row := range threadRows {
-		mrAuthorID := mrAuthorMap[row.MergeRequestID]
-		if row.AuthorID != mrAuthorID {
-			if hasThreadAwaitingAuthor[row.MergeRequestID] == nil {
-				hasThreadAwaitingAuthor[row.MergeRequestID] = make(map[uint]bool)
-			}
-			hasThreadAwaitingAuthor[row.MergeRequestID][row.ThreadStarterID] = true
+	for _, row := range waitingRows {
+		if hasThreadAwaitingAuthor[row.MergeRequestID] == nil {
+			hasThreadAwaitingAuthor[row.MergeRequestID] = make(map[uint]bool)
 		}
+		hasThreadAwaitingAuthor[row.MergeRequestID][row.WaitingReviewerID] = true
 	}
 
 	activeReviewerIDs := make(map[uint][]uint)

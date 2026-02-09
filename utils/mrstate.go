@@ -413,20 +413,35 @@ func getThreadAwaitingAuthorTime(db *gorm.DB, discussionID string, mrAuthorID ui
 }
 
 // getReviewerStateTransitionTime returns when reviewer entered their current state.
-// If reviewer has unresolved threads where they're last → waiting for author → earliest wait start
+// If reviewer participated in unresolved threads where last comment is not from MR author → waiting for author
 // Otherwise → needs action → when they entered that state
 func getReviewerStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, reviewerID uint) *time.Time {
 	var awaitingThreads []struct {
 		DiscussionID string
 	}
-	db.Model(&models.MRComment{}).
-		Select("DISTINCT gitlab_discussion_id as discussion_id").
-		Where(`merge_request_id = ? AND is_last_in_thread = ? AND author_id = ?
-			AND EXISTS (SELECT 1 FROM mr_comments starter
-				WHERE starter.gitlab_discussion_id = mr_comments.gitlab_discussion_id
-				AND starter.resolvable = ? AND starter.resolved = ?)`,
-			mr.ID, true, reviewerID, true, false).
-		Find(&awaitingThreads)
+	db.Raw(`
+		SELECT DISTINCT rc.gitlab_discussion_id as discussion_id
+		FROM mr_comments rc
+		WHERE rc.merge_request_id = ?
+		  AND rc.author_id = ?
+		  AND EXISTS (
+			SELECT 1 FROM mr_comments starter
+			WHERE starter.gitlab_discussion_id = rc.gitlab_discussion_id
+			  AND starter.resolvable = ? AND starter.resolved = ?
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM mr_comments last_c
+			WHERE last_c.gitlab_discussion_id = rc.gitlab_discussion_id
+			  AND last_c.is_last_in_thread = ?
+			  AND last_c.author_id != ?
+		  )
+		  AND rc.gitlab_created_at > COALESCE(
+			(SELECT MAX(ac.gitlab_created_at) FROM mr_comments ac
+			 WHERE ac.gitlab_discussion_id = rc.gitlab_discussion_id
+			   AND ac.author_id = ?),
+			'0001-01-01'
+		  )
+	`, mr.ID, reviewerID, true, false, true, mr.AuthorID, mr.AuthorID).Scan(&awaitingThreads)
 
 	if len(awaitingThreads) == 0 {
 		return getReviewerNeedsActionTime(db, mr, reviewerID)
@@ -434,7 +449,7 @@ func getReviewerStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, review
 
 	var earliestWaitStart *time.Time
 	for _, thread := range awaitingThreads {
-		waitStart := getThreadWaitStartForReviewer(db, thread.DiscussionID, mr.AuthorID)
+		waitStart := getThreadWaitStartForReviewer(db, thread.DiscussionID, mr.AuthorID, reviewerID)
 		if waitStart != nil && (earliestWaitStart == nil || waitStart.Before(*earliestWaitStart)) {
 			earliestWaitStart = waitStart
 		}
@@ -442,9 +457,9 @@ func getReviewerStateTransitionTime(db *gorm.DB, mr *models.MergeRequest, review
 	return earliestWaitStart
 }
 
-// getThreadWaitStartForReviewer returns when reviewer started waiting for author in this thread.
-// This is when reviewer commented after author's last reply (or thread creation if no author reply).
-func getThreadWaitStartForReviewer(db *gorm.DB, discussionID string, mrAuthorID uint) *time.Time {
+// getThreadWaitStartForReviewer returns when a specific reviewer started waiting for author in this thread.
+// This is when the reviewer commented after the MR author's last reply (or their first comment if no author reply).
+func getThreadWaitStartForReviewer(db *gorm.DB, discussionID string, mrAuthorID uint, reviewerID uint) *time.Time {
 	var comments []models.MRComment
 	db.Where("gitlab_discussion_id = ?", discussionID).
 		Order("gitlab_created_at ASC").
@@ -463,12 +478,17 @@ func getThreadWaitStartForReviewer(db *gorm.DB, discussionID string, mrAuthorID 
 	}
 
 	if lastAuthorTime == nil {
-		t := comments[0].GitlabCreatedAt
-		return &t
+		for _, c := range comments {
+			if c.AuthorID == reviewerID {
+				t := c.GitlabCreatedAt
+				return &t
+			}
+		}
+		return nil
 	}
 
 	for _, c := range comments {
-		if c.AuthorID != mrAuthorID && c.GitlabCreatedAt.After(*lastAuthorTime) {
+		if c.AuthorID == reviewerID && c.GitlabCreatedAt.After(*lastAuthorTime) {
 			t := c.GitlabCreatedAt
 			return &t
 		}
@@ -487,9 +507,9 @@ func getReviewerNeedsActionTime(db *gorm.DB, mr *models.MergeRequest, reviewerID
 
 	var lastAuthorReply models.MRComment
 	err := db.Where(`merge_request_id = ? AND author_id = ?
-		AND EXISTS (SELECT 1 FROM mr_comments starter
-			WHERE starter.gitlab_discussion_id = mr_comments.gitlab_discussion_id
-			AND starter.thread_starter_id = ?)`,
+		AND EXISTS (SELECT 1 FROM mr_comments rc
+			WHERE rc.gitlab_discussion_id = mr_comments.gitlab_discussion_id
+			AND rc.author_id = ?)`,
 		mr.ID, mr.AuthorID, reviewerID).
 		Order("gitlab_created_at DESC").
 		First(&lastAuthorReply).Error
@@ -499,7 +519,13 @@ func getReviewerNeedsActionTime(db *gorm.DB, mr *models.MergeRequest, reviewerID
 
 	var lastResolved models.MRAction
 	err = db.Where(`merge_request_id = ? AND action_type = ?
-		AND comment_id IN (SELECT id FROM mr_comments WHERE thread_starter_id = ?)`,
+		AND comment_id IN (
+			SELECT starter.id FROM mr_comments starter
+			WHERE starter.resolvable = true
+			AND EXISTS (SELECT 1 FROM mr_comments rc
+				WHERE rc.gitlab_discussion_id = starter.gitlab_discussion_id
+				AND rc.author_id = ?)
+		)`,
 		mr.ID, models.ActionCommentResolved, reviewerID).
 		Order("timestamp DESC").
 		First(&lastResolved).Error
@@ -940,29 +966,55 @@ func getThreadAwaitingAuthorTimeFromCache(discussionID string, mrAuthorID uint, 
 	return nil
 }
 
+// reviewerParticipatedAfterAuthor checks if reviewer wrote any comment in the thread
+// after the MR author's last comment (or MR author has no comments in the thread).
+func reviewerParticipatedAfterAuthor(threadComments []models.MRComment, reviewerID uint, mrAuthorID uint) bool {
+	var lastAuthorTime *time.Time
+	for i := len(threadComments) - 1; i >= 0; i-- {
+		if threadComments[i].AuthorID == mrAuthorID {
+			t := threadComments[i].GitlabCreatedAt
+			lastAuthorTime = &t
+			break
+		}
+	}
+
+	for _, c := range threadComments {
+		if c.AuthorID == reviewerID {
+			if lastAuthorTime == nil || c.GitlabCreatedAt.After(*lastAuthorTime) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // getReviewerStateTransitionTimeFromCache returns when reviewer entered their current state using cached data.
 func getReviewerStateTransitionTimeFromCache(mr *models.MergeRequest, reviewerID uint, cache *MRDataCache) *time.Time {
 	comments := cache.Comments[mr.ID]
 
-	// Find threads where reviewer is last commenter and thread is unresolved
-	threadStarters := make(map[string]*models.MRComment)
+	// Build sets for unresolved threads and last comments per thread
+	unresolvedDiscussions := make(map[string]bool)
 	threadLastComments := make(map[string]*models.MRComment)
 
 	for i := range comments {
 		c := &comments[i]
-		if c.ThreadStarterID == nil && c.Resolvable {
-			threadStarters[c.GitlabDiscussionID] = c
+		if c.Resolvable && !c.Resolved {
+			unresolvedDiscussions[c.GitlabDiscussionID] = true
 		}
-		threadLastComments[c.GitlabDiscussionID] = c
+		if c.IsLastInThread {
+			threadLastComments[c.GitlabDiscussionID] = c
+		}
 	}
 
+	// Find threads where reviewer participated after author's last reply
 	var awaitingDiscussionIDs []string
-	for discussionID, starter := range threadStarters {
-		if starter.Resolved {
+	for discussionID := range unresolvedDiscussions {
+		lastComment := threadLastComments[discussionID]
+		if lastComment == nil || lastComment.AuthorID == mr.AuthorID {
 			continue
 		}
-		lastComment := threadLastComments[discussionID]
-		if lastComment != nil && lastComment.AuthorID == reviewerID {
+		threadComments := cache.CommentsByDiscussion[discussionID]
+		if reviewerParticipatedAfterAuthor(threadComments, reviewerID, mr.AuthorID) {
 			awaitingDiscussionIDs = append(awaitingDiscussionIDs, discussionID)
 		}
 	}
@@ -973,7 +1025,7 @@ func getReviewerStateTransitionTimeFromCache(mr *models.MergeRequest, reviewerID
 
 	var earliestWaitStart *time.Time
 	for _, discussionID := range awaitingDiscussionIDs {
-		waitStart := getThreadWaitStartForReviewerFromCache(discussionID, mr.AuthorID, cache)
+		waitStart := getThreadWaitStartForReviewerFromCache(discussionID, mr.AuthorID, reviewerID, cache)
 		if waitStart != nil && (earliestWaitStart == nil || waitStart.Before(*earliestWaitStart)) {
 			earliestWaitStart = waitStart
 		}
@@ -981,8 +1033,8 @@ func getReviewerStateTransitionTimeFromCache(mr *models.MergeRequest, reviewerID
 	return earliestWaitStart
 }
 
-// getThreadWaitStartForReviewerFromCache returns when reviewer started waiting for author in this thread using cached data.
-func getThreadWaitStartForReviewerFromCache(discussionID string, mrAuthorID uint, cache *MRDataCache) *time.Time {
+// getThreadWaitStartForReviewerFromCache returns when a specific reviewer started waiting for author in this thread using cached data.
+func getThreadWaitStartForReviewerFromCache(discussionID string, mrAuthorID uint, reviewerID uint, cache *MRDataCache) *time.Time {
 	comments := cache.CommentsByDiscussion[discussionID]
 	if len(comments) == 0 {
 		return nil
@@ -998,12 +1050,17 @@ func getThreadWaitStartForReviewerFromCache(discussionID string, mrAuthorID uint
 	}
 
 	if lastAuthorTime == nil {
-		t := comments[0].GitlabCreatedAt
-		return &t
+		for _, c := range comments {
+			if c.AuthorID == reviewerID {
+				t := c.GitlabCreatedAt
+				return &t
+			}
+		}
+		return nil
 	}
 
 	for _, c := range comments {
-		if c.AuthorID != mrAuthorID && c.GitlabCreatedAt.After(*lastAuthorTime) {
+		if c.AuthorID == reviewerID && c.GitlabCreatedAt.After(*lastAuthorTime) {
 			t := c.GitlabCreatedAt
 			return &t
 		}
@@ -1018,37 +1075,36 @@ func getReviewerNeedsActionTimeFromCache(mr *models.MergeRequest, reviewerID uin
 	actions := cache.Actions[mr.ID]
 	comments := cache.Comments[mr.ID]
 
-	// Build set of comment IDs where thread_starter_id = reviewerID
-	reviewerThreadCommentIDs := make(map[uint]bool)
+	// Find discussions where reviewer participated (wrote any comment)
+	reviewerDiscussions := make(map[string]bool)
 	for _, c := range comments {
-		if c.ThreadStarterID != nil && *c.ThreadStarterID == reviewerID {
-			reviewerThreadCommentIDs[c.ID] = true
+		if c.AuthorID == reviewerID {
+			reviewerDiscussions[c.GitlabDiscussionID] = true
 		}
 	}
 
-	// Find last author reply in reviewer's threads
+	// Build set of resolvable comment IDs in reviewer's discussions
+	reviewerDiscussionResolvableIDs := make(map[uint]bool)
+	for _, c := range comments {
+		if c.Resolvable && reviewerDiscussions[c.GitlabDiscussionID] {
+			reviewerDiscussionResolvableIDs[c.ID] = true
+		}
+	}
+
+	// Find last author reply in threads where reviewer participated
 	for i := len(comments) - 1; i >= 0; i-- {
 		c := &comments[i]
-		if c.AuthorID == mr.AuthorID {
-			// Check if this comment is in a thread started by reviewer
-			threadComments := cache.CommentsByDiscussion[c.GitlabDiscussionID]
-			for _, tc := range threadComments {
-				if tc.ThreadStarterID != nil && *tc.ThreadStarterID == reviewerID {
-					candidates = append(candidates, c.GitlabCreatedAt)
-					break
-				}
-			}
-			if len(candidates) > 0 {
-				break
-			}
+		if c.AuthorID == mr.AuthorID && reviewerDiscussions[c.GitlabDiscussionID] {
+			candidates = append(candidates, c.GitlabCreatedAt)
+			break
 		}
 	}
 
-	// Find last resolved action for reviewer's threads
+	// Find last resolved action for reviewer's discussion threads
 	for i := len(actions) - 1; i >= 0; i-- {
 		a := &actions[i]
 		if a.ActionType == models.ActionCommentResolved && a.CommentID != nil {
-			if reviewerThreadCommentIDs[*a.CommentID] {
+			if reviewerDiscussionResolvableIDs[*a.CommentID] {
 				candidates = append(candidates, a.Timestamp)
 				break
 			}

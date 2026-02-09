@@ -2,6 +2,7 @@ package utils
 
 import (
 	"testing"
+	"time"
 
 	"devstreamlinebot/models"
 	"devstreamlinebot/testutils"
@@ -2097,4 +2098,284 @@ func TestFindUserActionMRs_FullEndToEnd(t *testing.T) {
 			}
 		}
 	})
+}
+
+// ============================================================================
+// Thread Participation Tests - Reviewer B comments on Reviewer A's thread
+// ============================================================================
+
+func TestFindUserActionMRs_ReviewerBOnReviewerAThread_NoAuthorReply(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewerA := userFactory.Create()
+	reviewerB := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewerA, reviewerB)
+
+	discussionID := "disc-participation-1"
+	t1 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+
+	// ReviewerA starts thread
+	testutils.CreateMRComment(db, mr, reviewerA, 1,
+		testutils.WithResolvable(),
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithNotLastInThread(),
+		testutils.WithCommentCreatedAt(t1))
+
+	// ReviewerB comments on the same thread (no author reply yet)
+	testutils.CreateMRComment(db, mr, reviewerB, 2,
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewerA),
+		testutils.WithIsLastInThread(),
+		testutils.WithCommentCreatedAt(t2))
+
+	// ReviewerA should be excluded (started thread, commented after no author reply)
+	reviewMRsA, _, _, err := FindUserActionMRs(db, reviewerA.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reviewMRsA) != 0 {
+		t.Errorf("expected 0 review MRs for reviewerA (waiting for author), got %d", len(reviewMRsA))
+	}
+
+	// ReviewerB should also be excluded (participated in thread after no author reply)
+	reviewMRsB, _, _, err := FindUserActionMRs(db, reviewerB.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reviewMRsB) != 0 {
+		t.Errorf("expected 0 review MRs for reviewerB (participated, waiting for author), got %d", len(reviewMRsB))
+	}
+}
+
+func TestFindUserActionMRs_ReviewerBNeedsActionAfterAuthorReply(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewerA := userFactory.Create()
+	reviewerB := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewerA, reviewerB)
+
+	discussionID := "disc-participation-2"
+	t1 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+	t3 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	// ReviewerA starts thread
+	testutils.CreateMRComment(db, mr, reviewerA, 1,
+		testutils.WithResolvable(),
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithNotLastInThread(),
+		testutils.WithCommentCreatedAt(t1))
+
+	// ReviewerB comments
+	testutils.CreateMRComment(db, mr, reviewerB, 2,
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewerA),
+		testutils.WithNotLastInThread(),
+		testutils.WithCommentCreatedAt(t2))
+
+	// Author replies (last in thread)
+	testutils.CreateMRComment(db, mr, author, 3,
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewerA),
+		testutils.WithIsLastInThread(),
+		testutils.WithCommentCreatedAt(t3))
+
+	// Both reviewers should need action (author replied after their comments)
+	reviewMRsA, _, _, err := FindUserActionMRs(db, reviewerA.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reviewMRsA) != 1 {
+		t.Errorf("expected 1 review MR for reviewerA (author replied), got %d", len(reviewMRsA))
+	}
+
+	reviewMRsB, _, _, err := FindUserActionMRs(db, reviewerB.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reviewMRsB) != 1 {
+		t.Errorf("expected 1 review MR for reviewerB (author replied after their comment), got %d", len(reviewMRsB))
+	}
+}
+
+func TestFindUserActionMRs_ReviewerBReCommentsAfterAuthorReply(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewerA := userFactory.Create()
+	reviewerB := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewerA, reviewerB)
+
+	discussionID := "disc-participation-3"
+	t1 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+	t3 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	t4 := time.Date(2026, 1, 1, 13, 0, 0, 0, time.UTC)
+
+	// ReviewerA starts thread
+	testutils.CreateMRComment(db, mr, reviewerA, 1,
+		testutils.WithResolvable(),
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithNotLastInThread(),
+		testutils.WithCommentCreatedAt(t1))
+
+	// ReviewerB comments
+	testutils.CreateMRComment(db, mr, reviewerB, 2,
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewerA),
+		testutils.WithNotLastInThread(),
+		testutils.WithCommentCreatedAt(t2))
+
+	// Author replies
+	testutils.CreateMRComment(db, mr, author, 3,
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewerA),
+		testutils.WithNotLastInThread(),
+		testutils.WithCommentCreatedAt(t3))
+
+	// ReviewerB re-comments after author's reply (last in thread)
+	testutils.CreateMRComment(db, mr, reviewerB, 4,
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewerA),
+		testutils.WithIsLastInThread(),
+		testutils.WithCommentCreatedAt(t4))
+
+	// ReviewerA should need action (their comment T1 < author's T3, no new comment after)
+	reviewMRsA, _, _, err := FindUserActionMRs(db, reviewerA.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reviewMRsA) != 1 {
+		t.Errorf("expected 1 review MR for reviewerA (needs to re-review after author reply), got %d", len(reviewMRsA))
+	}
+
+	// ReviewerB should be excluded (re-commented at T4 > author's T3)
+	reviewMRsB, _, _, err := FindUserActionMRs(db, reviewerB.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reviewMRsB) != 0 {
+		t.Errorf("expected 0 review MRs for reviewerB (re-commented after author, waiting), got %d", len(reviewMRsB))
+	}
+}
+
+func TestGetActiveReviewers_ReviewerBOnReviewerAThread(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewerA := userFactory.Create()
+	reviewerB := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewerA, reviewerB)
+
+	discussionID := "disc-active-participation"
+	t1 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+
+	// ReviewerA starts thread
+	testutils.CreateMRComment(db, mr, reviewerA, 1,
+		testutils.WithResolvable(),
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithNotLastInThread(),
+		testutils.WithCommentCreatedAt(t1))
+
+	// ReviewerB comments (last in thread, no author reply)
+	testutils.CreateMRComment(db, mr, reviewerB, 2,
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewerA),
+		testutils.WithIsLastInThread(),
+		testutils.WithCommentCreatedAt(t2))
+
+	result, err := GetActiveReviewers(db, []uint{mr.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both reviewers should be inactive (waiting for author)
+	activeReviewers := result[mr.ID]
+	if len(activeReviewers) != 0 {
+		names := make([]uint, len(activeReviewers))
+		for i, r := range activeReviewers {
+			names[i] = r.ID
+		}
+		t.Errorf("expected 0 active reviewers (both waiting for author), got %d: %v", len(activeReviewers), names)
+	}
+}
+
+func TestGetActiveReviewers_ReviewerBActiveAfterAuthorReply(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	reviewerA := userFactory.Create()
+	reviewerB := userFactory.Create()
+
+	mr := mrFactory.Create(repo, author)
+	testutils.AssignReviewers(db, &mr, reviewerA, reviewerB)
+
+	discussionID := "disc-active-after-reply"
+	t1 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+	t3 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	// ReviewerA starts thread
+	testutils.CreateMRComment(db, mr, reviewerA, 1,
+		testutils.WithResolvable(),
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithNotLastInThread(),
+		testutils.WithCommentCreatedAt(t1))
+
+	// ReviewerB comments
+	testutils.CreateMRComment(db, mr, reviewerB, 2,
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewerA),
+		testutils.WithNotLastInThread(),
+		testutils.WithCommentCreatedAt(t2))
+
+	// Author replies (last in thread)
+	testutils.CreateMRComment(db, mr, author, 3,
+		testutils.WithDiscussionID(discussionID),
+		testutils.WithThreadStarter(&reviewerA),
+		testutils.WithIsLastInThread(),
+		testutils.WithCommentCreatedAt(t3))
+
+	result, err := GetActiveReviewers(db, []uint{mr.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both reviewers should be active (author replied after all their comments)
+	activeReviewers := result[mr.ID]
+	if len(activeReviewers) != 2 {
+		t.Errorf("expected 2 active reviewers (author replied), got %d", len(activeReviewers))
+	}
 }
