@@ -113,6 +113,7 @@ func (c *PersonalDigestConsumer) processPreference(pref models.DailyDigestPrefer
 	}
 
 	text := utils.BuildUserActionsDigest(c.db, reviewMRs, fixesMRs, authorOnReviewMRs, releaseMRs, gitlabUser.Username)
+	text = "DAILY " + text
 	msg := c.vkBot.NewTextMessage(lockedPref.DMChatID, text)
 	if err := msg.Send(); err != nil {
 		log.Printf("failed to send personal digest to %s: %v", lockedPref.VKUser.UserID, err)

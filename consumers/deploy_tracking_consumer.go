@@ -107,13 +107,13 @@ func (c *DeployTrackingConsumer) processJob(job *gitlab.Job, rules []models.Depl
 			}
 			tracked = models.TrackedDeployJob{
 				DeployTrackingRuleID: rule.ID,
-				GitlabJobID:         job.ID,
-				Status:              job.Status,
-				Ref:                 job.Ref,
-				TriggeredBy:         triggeredBy,
-				WebURL:              job.WebURL,
-				StartedAt:           job.StartedAt,
-				FinishedAt:          job.FinishedAt,
+				GitlabJobID:          job.ID,
+				Status:               job.Status,
+				Ref:                  job.Ref,
+				TriggeredBy:          triggeredBy,
+				WebURL:               job.WebURL,
+				StartedAt:            job.StartedAt,
+				FinishedAt:           job.FinishedAt,
 			}
 			if err := c.db.Create(&tracked).Error; err != nil {
 				log.Printf("failed to create tracked deploy job %d: %v", job.ID, err)
@@ -139,8 +139,8 @@ func (c *DeployTrackingConsumer) notifyIfNeeded(tracked *models.TrackedDeployJob
 	repoName := rule.TargetRepository.Name
 
 	if tracked.Status == "running" && !tracked.NotifiedRunning {
-		message := fmt.Sprintf("Начат деплой %s\nВетка: %s\nЗапустил: %s\n%s",
-			repoName, tracked.Ref, tracked.TriggeredBy, tracked.WebURL)
+		message := fmt.Sprintf("Начат деплой %s ദ്ദി(˵ •̀ ᴗ - ˵ ) ✧\nЗапустил: %s\n%s",
+			repoName, tracked.TriggeredBy, tracked.WebURL)
 		c.sendToReleaseSubscribers(rule.TargetRepositoryID, message)
 		c.db.Model(tracked).Update("notified_running", true)
 	}
@@ -150,14 +150,14 @@ func (c *DeployTrackingConsumer) notifyIfNeeded(tracked *models.TrackedDeployJob
 		var message string
 		switch tracked.Status {
 		case "success":
-			message = fmt.Sprintf("Деплой %s завершён успешно\nВетка: %s\nЗапустил: %s\n%s",
-				repoName, tracked.Ref, tracked.TriggeredBy, tracked.WebURL)
+			message = fmt.Sprintf("Деплой %s завершён ◝(ᵔᗜᵔ)◜\nЗапустил: %s\n%s",
+				repoName, tracked.TriggeredBy, tracked.WebURL)
 		case "failed":
-			message = fmt.Sprintf("Деплой %s провален\nВетка: %s\nЗапустил: %s\n%s",
-				repoName, tracked.Ref, tracked.TriggeredBy, tracked.WebURL)
+			message = fmt.Sprintf("Деплой %s провален (˶˃⤙˂˶)\nЗапустил: %s\n%s",
+				repoName, tracked.TriggeredBy, tracked.WebURL)
 		case "canceled":
-			message = fmt.Sprintf("Деплой %s отменён\nВетка: %s\nЗапустил: %s\n%s",
-				repoName, tracked.Ref, tracked.TriggeredBy, tracked.WebURL)
+			message = fmt.Sprintf("Деплой %s отменён (˶˃⤙˂˶)\nЗапустил: %s\n%s",
+				repoName, tracked.TriggeredBy, tracked.WebURL)
 		}
 		c.sendToReleaseSubscribers(rule.TargetRepositoryID, message)
 		c.db.Model(tracked).Update("notified_finished", true)
