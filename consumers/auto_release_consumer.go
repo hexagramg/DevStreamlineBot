@@ -166,10 +166,11 @@ func (c *AutoReleaseConsumer) createReleaseMR(projectID int, sourceBranch, targe
 	title := fmt.Sprintf("Release %s", time.Now().Format("2006-01-02"))
 
 	_, _, err := c.mrService.CreateMergeRequest(projectID, &gitlab.CreateMergeRequestOptions{
-		SourceBranch: gitlab.Ptr(sourceBranch),
-		TargetBranch: gitlab.Ptr(targetBranch),
-		Title:        gitlab.Ptr(title),
-		Labels:       &gitlab.LabelOptions{releaseLabel},
+		SourceBranch:       gitlab.Ptr(sourceBranch),
+		TargetBranch:       gitlab.Ptr(targetBranch),
+		Title:              gitlab.Ptr(title),
+		Labels:             &gitlab.LabelOptions{releaseLabel},
+		RemoveSourceBranch: gitlab.Ptr(true),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create release MR: %w", err)

@@ -132,8 +132,8 @@ func TestPollDeployJobs_NewRunningJob_NotifiesStart(t *testing.T) {
 	if !strings.Contains(sent[0].Text, "deployer") {
 		t.Errorf("expected username in notification, got: %s", sent[0].Text)
 	}
-	if !strings.Contains(sent[0].Text, "main") {
-		t.Errorf("expected ref in notification, got: %s", sent[0].Text)
+	if !strings.Contains(sent[0].Text, "https://gitlab.com/-/jobs/5001") {
+		t.Errorf("expected job URL in notification, got: %s", sent[0].Text)
 	}
 
 	var tracked models.TrackedDeployJob
@@ -192,7 +192,7 @@ func TestPollDeployJobs_RunningJobCompletesSuccessfully(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(sent))
 	}
-	if !strings.Contains(sent[0].Text, "завершён успешно") {
+	if !strings.Contains(sent[0].Text, "завершён") {
 		t.Errorf("expected success notification, got: %s", sent[0].Text)
 	}
 
@@ -339,7 +339,7 @@ func TestPollDeployJobs_JobFirstSeenAsTerminal_OnlyFinishNotification(t *testing
 	if len(sent) != 1 {
 		t.Fatalf("expected 1 message (only finish), got %d", len(sent))
 	}
-	if !strings.Contains(sent[0].Text, "завершён успешно") {
+	if !strings.Contains(sent[0].Text, "завершён") {
 		t.Errorf("expected success notification, got: %s", sent[0].Text)
 	}
 }

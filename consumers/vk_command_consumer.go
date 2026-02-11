@@ -1976,10 +1976,11 @@ func (c *VKCommandConsumer) handleSpawnBranchCommand(msg *botgolang.Message, _ b
 	// Create MR: feature_release branch → dev branch
 	title := fmt.Sprintf("Feature Release %s", time.Now().Format("2006-01-02"))
 	mrResult, _, err := c.glClient.MergeRequests.CreateMergeRequest(repo.GitlabID, &gitlab.CreateMergeRequestOptions{
-		SourceBranch: gitlab.Ptr(branchName),
-		TargetBranch: gitlab.Ptr(devBranch),
-		Title:        gitlab.Ptr(title),
-		Labels:       &gitlab.LabelOptions{featureReleaseLabel.LabelName},
+		SourceBranch:       gitlab.Ptr(branchName),
+		TargetBranch:       gitlab.Ptr(devBranch),
+		Title:              gitlab.Ptr(title),
+		Labels:             &gitlab.LabelOptions{featureReleaseLabel.LabelName},
+		RemoveSourceBranch: gitlab.Ptr(true),
 	})
 	if err != nil {
 		c.sendReply(msg, fmt.Sprintf("Branch %s created, but failed to create MR: %v", branchName, err))
