@@ -866,3 +866,92 @@ func TestMarkActionNotified_NonExistentID(t *testing.T) {
 	// This should not panic - just log an error
 	consumer.markActionNotified(99999)
 }
+
+func TestConvertToVKHTML(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "empty input",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "plain text passthrough",
+			input:    "Hello world",
+			expected: "Hello world",
+		},
+		{
+			name:     "horizontal rules stripped",
+			input:    "before\n---\nafter\n***\nend\n___\ndone",
+			expected: "before\nafter\nend\ndone",
+		},
+		{
+			name:     "headers stripped",
+			input:    "# Header 1\n## Header 2\n### Header 3",
+			expected: "Header 1\nHeader 2\nHeader 3",
+		},
+		{
+			name:     "markdown link to html link",
+			input:    "[Click here](https://example.com)",
+			expected: `<a href="https://example.com">Click here</a>`,
+		},
+		{
+			name:     "multiple links on one line",
+			input:    "[INTDEV-123](https://jira.example.com/INTDEV-123) [Fix bug](https://gitlab.example.com/mr/1)",
+			expected: `<a href="https://jira.example.com/INTDEV-123">INTDEV-123</a> <a href="https://gitlab.example.com/mr/1">Fix bug</a>`,
+		},
+		{
+			name:     "html entities escaped in text",
+			input:    "x < y && z > w",
+			expected: "x &lt; y &amp;&amp; z &gt; w",
+		},
+		{
+			name:     "html entities escaped inside links too",
+			input:    "[A & B](https://example.com?a=1&b=2)",
+			expected: `<a href="https://example.com?a=1&amp;b=2">A &amp; B</a>`,
+		},
+		{
+			name:     "at mentions stripped",
+			input:    "by @victor.morozov",
+			expected: "by victor.morozov",
+		},
+		{
+			name:     "parentheses in link text preserved",
+			input:    "[users: поправить(ограничить) права](https://example.com)",
+			expected: `<a href="https://example.com">users: поправить(ограничить) права</a>`,
+		},
+		{
+			name:     "list items converted to ul li",
+			input:    "- first item\n- second item\n- third item",
+			expected: "<ul>\n<li>first item</li>\n<li>second item</li>\n<li>third item</li>\n</ul>",
+		},
+		{
+			name:     "list with non-list text before and after",
+			input:    "Header\n- item one\n- item two\nFooter",
+			expected: "Header\n<ul>\n<li>item one</li>\n<li>item two</li>\n</ul>\nFooter",
+		},
+		{
+			name: "real world release description",
+			input: "---\n## Included MRs\n" +
+				"- [INTDEV-42701](https://jira.vk.team/browse/INTDEV-42701) [Фикс блокировки поля сап грейдов](https://gitlab.corp.mail.ru/intdev/jobofferapp/-/merge_requests/2907) by @victor.morozov\n" +
+				"- [TBD: Фиксы редизайна](https://gitlab.corp.mail.ru/intdev/jobofferapp/-/merge_requests/3031) by @p.gusev\n" +
+				"- [INTDEV-41931](https://jira.vk.team/browse/INTDEV-41931) [users: поправить(ограничить) права рекрутеров](https://gitlab.corp.mail.ru/intdev/jobofferapp/-/merge_requests/2751) by @f.gugnin",
+			expected: "Included MRs\n<ul>\n" +
+				`<li><a href="https://jira.vk.team/browse/INTDEV-42701">INTDEV-42701</a> <a href="https://gitlab.corp.mail.ru/intdev/jobofferapp/-/merge_requests/2907">Фикс блокировки поля сап грейдов</a> by victor.morozov</li>` + "\n" +
+				`<li><a href="https://gitlab.corp.mail.ru/intdev/jobofferapp/-/merge_requests/3031">TBD: Фиксы редизайна</a> by p.gusev</li>` + "\n" +
+				`<li><a href="https://jira.vk.team/browse/INTDEV-41931">INTDEV-41931</a> <a href="https://gitlab.corp.mail.ru/intdev/jobofferapp/-/merge_requests/2751">users: поправить(ограничить) права рекрутеров</a> by f.gugnin</li>` + "\n</ul>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := convertToVKHTML(tt.input)
+			if got != tt.expected {
+				t.Errorf("convertToVKHTML() =\n%s\nwant:\n%s", got, tt.expected)
+			}
+		})
+	}
+}

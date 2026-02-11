@@ -44,11 +44,11 @@ func (m *MockVKBot) NewTextMessage(chatID string, text string) interfaces.VKBotM
 	return msg
 }
 
-func (m *MockVKBot) NewMarkdownMessage(chatID string, text string) interfaces.VKBotMessage {
+func (m *MockVKBot) NewHTMLMessage(chatID string, text string) interfaces.VKBotMessage {
 	msg := &MockVKMessage{
 		ChatID:    chatID,
 		Text:      text,
-		ParseMode: "MarkdownV2",
+		ParseMode: "HTML",
 	}
 	m.Messages = append(m.Messages, msg)
 	return msg

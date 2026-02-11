@@ -3,6 +3,7 @@ package consumers
 import (
 	"errors"
 	"fmt"
+	"html"
 	"log"
 	"regexp"
 	"strings"
@@ -101,11 +102,12 @@ func (c *ReleaseNotificationConsumer) processNewReleaseAction(action models.MRAc
 	}
 
 	releaseDate := time.Now().Format("02.01.2006")
-	description := convertToVKMarkdown(mr.Description)
-	message := fmt.Sprintf("Новый релиз %s %s: [Release MR](%s)\n\n%s", repo.Name, releaseDate, mr.WebURL, description)
+	description := convertToVKHTML(mr.Description)
+	message := fmt.Sprintf("Новый релиз %s %s: <a href=\"%s\">Release MR</a>\n\n%s",
+		html.EscapeString(repo.Name), releaseDate, mr.WebURL, description)
 
 	for _, sub := range subs {
-		if err := c.sendMarkdownWithFallback(sub.Chat.ChatID, message); err != nil {
+		if err := c.sendHTMLWithFallback(sub.Chat.ChatID, message); err != nil {
 			log.Printf("failed to send release notification to chat %s: %v", sub.Chat.ChatID, err)
 		}
 	}
@@ -253,7 +255,7 @@ func (c *ReleaseNotificationConsumer) notifyDescriptionChanges(releaseMR models.
 	message := fmt.Sprintf("%s %s\n%s", header, repo.Name, strings.Join(newEntries, "\n"))
 
 	for _, sub := range subs {
-		if err := c.sendMarkdownWithFallback(sub.Chat.ChatID, message); err != nil {
+		if err := c.sendHTMLWithFallback(sub.Chat.ChatID, message); err != nil {
 			log.Printf("failed to send release update notification to chat %s: %v", sub.Chat.ChatID, err)
 		}
 	}
@@ -269,9 +271,12 @@ func (c *ReleaseNotificationConsumer) notifyDescriptionChanges(releaseMR models.
 
 var linkRegex = regexp.MustCompile(`\[([^\]]*)\]\(([^)]*)\)`)
 
-func convertToVKMarkdown(text string) string {
+var linkPlaceholderRegex = regexp.MustCompile("\x00LINK:(.*?)\x00TEXT:(.*?)\x00END")
+
+func convertToVKHTML(text string) string {
 	lines := strings.Split(text, "\n")
 	var result []string
+	inList := false
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -288,18 +293,44 @@ func convertToVKMarkdown(text string) string {
 			line = strings.TrimPrefix(trimmed, "### ")
 		}
 
-		// Replace parentheses in link text with spaces for MarkdownV2 compatibility
+		// Replace markdown links with placeholders before HTML escaping
 		line = linkRegex.ReplaceAllStringFunc(line, func(match string) string {
 			parts := linkRegex.FindStringSubmatch(match)
 			if len(parts) == 3 {
-				cleaned := strings.ReplaceAll(parts[1], "(", " ")
-				cleaned = strings.ReplaceAll(cleaned, ")", " ")
-				return "[" + cleaned + "](" + parts[2] + ")"
+				return "\x00LINK:" + parts[2] + "\x00TEXT:" + parts[1] + "\x00END"
 			}
 			return match
 		})
 
-		result = append(result, line)
+		// Escape HTML in non-link text
+		line = html.EscapeString(line)
+
+		// Restore links as HTML <a> tags
+		line = linkPlaceholderRegex.ReplaceAllString(line, `<a href="$1">$2</a>`)
+
+		// Strip @ from mentions
+		line = strings.ReplaceAll(line, "@", "")
+
+		// Convert markdown list items to HTML list items
+		isList := strings.HasPrefix(strings.TrimSpace(line), "- ")
+		if isList {
+			if !inList {
+				result = append(result, "<ul>")
+				inList = true
+			}
+			content := strings.TrimPrefix(strings.TrimSpace(line), "- ")
+			result = append(result, "<li>"+content+"</li>")
+		} else {
+			if inList {
+				result = append(result, "</ul>")
+				inList = false
+			}
+			result = append(result, line)
+		}
+	}
+
+	if inList {
+		result = append(result, "</ul>")
 	}
 
 	return strings.Join(result, "\n")
@@ -333,11 +364,11 @@ func extractNewEntries(oldDesc, newDesc string) []string {
 	return newEntries
 }
 
-func (c *ReleaseNotificationConsumer) sendMarkdownWithFallback(chatID, text string) error {
-	msg := c.vkBot.NewMarkdownMessage(chatID, text)
+func (c *ReleaseNotificationConsumer) sendHTMLWithFallback(chatID, text string) error {
+	msg := c.vkBot.NewHTMLMessage(chatID, text)
 	if err := msg.Send(); err != nil {
 		if strings.Contains(err.Error(), "Format error") {
-			log.Printf("markdown rejected for chat %s, retrying as plain text", chatID)
+			log.Printf("HTML format rejected for chat %s, retrying as plain text", chatID)
 			return c.vkBot.NewTextMessage(chatID, text).Send()
 		}
 		return err
