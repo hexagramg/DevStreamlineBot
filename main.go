@@ -63,6 +63,7 @@ func main() {
 		&models.DailyDigestPreference{}, &models.BlockLabel{}, &models.ReleaseManager{}, &models.ReleaseLabel{},
 		&models.AutoReleaseBranchConfig{}, &models.ReleaseReadyLabel{}, &models.JiraProjectPrefix{},
 		&models.ReleaseSubscription{}, &models.MRNotificationState{},
+		&models.FeatureReleaseLabel{}, &models.FeatureReleaseBranch{},
 		&models.DeployTrackingRule{}, &models.TrackedDeployJob{},
 	); err != nil {
 		log.Fatalf("failed to migrate database schemas: %v", err)
@@ -162,6 +163,7 @@ func main() {
 			mrReviewerConsumer.CleanupOldUnnotifiedActions()
 			autoReleaseConsumer.ProcessAutoReleaseBranches()
 			autoReleaseConsumer.ProcessReleaseMRDescriptions()
+			autoReleaseConsumer.ProcessFeatureReleaseMRDescriptions()
 			releaseNotificationConsumer.ProcessNewReleaseNotifications()
 			releaseNotificationConsumer.ProcessReleaseMRDescriptionChanges()
 			deployTrackingConsumer.PollDeployJobs()

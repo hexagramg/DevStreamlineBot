@@ -56,15 +56,24 @@ func (c *ReleaseNotificationConsumer) processNewReleaseAction(action models.MRAc
 	mr := action.MergeRequest
 	repo := mr.Repository
 
-	var releaseLabel models.ReleaseLabel
-	if err := c.db.Where("repository_id = ?", mr.RepositoryID).First(&releaseLabel).Error; err != nil {
-		c.markActionNotified(action.ID)
-		return
+	// Check if MR has a release label or feature release label
+	releaseLabelNames := make(map[string]bool)
+
+	var releaseLabels []models.ReleaseLabel
+	c.db.Where("repository_id = ?", mr.RepositoryID).Find(&releaseLabels)
+	for _, rl := range releaseLabels {
+		releaseLabelNames[rl.LabelName] = true
+	}
+
+	var featureReleaseLabels []models.FeatureReleaseLabel
+	c.db.Where("repository_id = ?", mr.RepositoryID).Find(&featureReleaseLabels)
+	for _, frl := range featureReleaseLabels {
+		releaseLabelNames[frl.LabelName] = true
 	}
 
 	hasReleaseLabel := false
 	for _, label := range mr.Labels {
-		if label.Name == releaseLabel.LabelName {
+		if releaseLabelNames[label.Name] {
 			hasReleaseLabel = true
 			break
 		}
@@ -130,48 +139,75 @@ func (c *ReleaseNotificationConsumer) processRepoDescriptionChanges(repoID uint)
 		return
 	}
 
-	var releaseLabel models.ReleaseLabel
-	if err := c.db.Where("repository_id = ?", repoID).First(&releaseLabel).Error; err != nil {
-		return
-	}
-
 	var releaseReadyLabel models.ReleaseReadyLabel
 	if err := c.db.Where("repository_id = ?", repoID).First(&releaseReadyLabel).Error; err != nil {
 		return
 	}
 
-	var releaseMR models.MergeRequest
+	// Collect all release label names (both regular and feature release)
+	allReleaseLabelNames := make(map[string]bool)
+
+	var releaseLabels []models.ReleaseLabel
+	c.db.Where("repository_id = ?", repoID).Find(&releaseLabels)
+	for _, rl := range releaseLabels {
+		allReleaseLabelNames[rl.LabelName] = true
+	}
+
+	var featureReleaseLabels []models.FeatureReleaseLabel
+	c.db.Where("repository_id = ?", repoID).Find(&featureReleaseLabels)
+	for _, frl := range featureReleaseLabels {
+		allReleaseLabelNames[frl.LabelName] = true
+	}
+
+	if len(allReleaseLabelNames) == 0 {
+		return
+	}
+
+	labelNamesList := make([]string, 0, len(allReleaseLabelNames))
+	for name := range allReleaseLabelNames {
+		labelNamesList = append(labelNamesList, name)
+	}
+
+	// Find all open MRs with any release/feature release label
+	var releaseMRs []models.MergeRequest
 	if err := c.db.
 		Joins("JOIN merge_request_labels ON merge_request_labels.merge_request_id = merge_requests.id").
 		Joins("JOIN labels ON labels.id = merge_request_labels.label_id").
-		Where("merge_requests.repository_id = ? AND merge_requests.state = ? AND labels.name = ?",
-			repoID, "opened", releaseLabel.LabelName).
+		Where("merge_requests.repository_id = ? AND merge_requests.state = ? AND labels.name IN ?",
+			repoID, "opened", labelNamesList).
 		Preload("Labels").
-		First(&releaseMR).Error; err != nil {
+		Find(&releaseMRs).Error; err != nil {
 		return
 	}
 
-	hasReleaseLabel := false
-	hasReleaseReadyLabel := false
-	for _, label := range releaseMR.Labels {
-		if label.Name == releaseLabel.LabelName {
-			hasReleaseLabel = true
+	for _, releaseMR := range releaseMRs {
+		// Verify MR has both a release/feature release label AND the ready label
+		hasAnyReleaseLabel := false
+		hasReadyLabel := false
+		for _, label := range releaseMR.Labels {
+			if allReleaseLabelNames[label.Name] {
+				hasAnyReleaseLabel = true
+			}
+			if label.Name == releaseReadyLabel.LabelName {
+				hasReadyLabel = true
+			}
 		}
-		if label.Name == releaseReadyLabel.LabelName {
-			hasReleaseReadyLabel = true
+
+		if !hasAnyReleaseLabel || !hasReadyLabel {
+			continue
 		}
-	}
 
-	if !hasReleaseLabel || !hasReleaseReadyLabel {
-		return
+		c.notifyDescriptionChanges(releaseMR, repo, repoID)
 	}
+}
 
+func (c *ReleaseNotificationConsumer) notifyDescriptionChanges(releaseMR models.MergeRequest, repo models.Repository, repoID uint) {
 	var latest models.MRNotificationState
 	err := c.db.Where("merge_request_id = ?", releaseMR.ID).
 		Order("created_at desc").First(&latest).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		c.db.Create(&models.MRNotificationState{
-			MergeRequestID:  releaseMR.ID,
+			MergeRequestID:      releaseMR.ID,
 			NotifiedDescription: releaseMR.Description,
 		})
 		return

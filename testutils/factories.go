@@ -44,6 +44,8 @@ func SetupTestDB(t *testing.T) *gorm.DB {
 		&models.ReleaseSubscription{},
 		&models.JiraProjectPrefix{},
 		&models.MRNotificationState{},
+		&models.FeatureReleaseLabel{},
+		&models.FeatureReleaseBranch{},
 		&models.DeployTrackingRule{},
 		&models.TrackedDeployJob{},
 	)

@@ -21,7 +21,8 @@ import (
 const (
 	defaultBlockLabelColor        = "#dc143c" // crimson
 	defaultReleaseLabelColor      = "#808080" // gray
-	defaultReleaseReadyLabelColor = "#FFD700" // gold
+	defaultReleaseReadyLabelColor      = "#FFD700" // gold
+	defaultFeatureReleaseLabelColor    = "#9370DB" // medium purple
 )
 
 // VKCommandConsumer processes VK Teams messages and looks for commands.
@@ -89,6 +90,10 @@ func (c *VKCommandConsumer) processMessage(msg *botgolang.Message, from botgolan
 		c.handleEnsureLabelCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/release_managers") {
 		c.handleReleaseManagersCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/add_feature_release_tag") {
+		c.handleAddFeatureReleaseLabelCommand(msg, from)
+	} else if strings.HasPrefix(msg.Text, "/spawn_branch") {
+		c.handleSpawnBranchCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/auto_release_branch") {
 		c.handleAutoReleaseBranchCommand(msg, from)
 	} else if strings.HasPrefix(msg.Text, "/add_jira_prefix") {
@@ -1787,6 +1792,212 @@ func (c *VKCommandConsumer) handleAutoReleaseBranchCommand(msg *botgolang.Messag
 		reply = "No repositories were configured."
 	}
 	c.sendReply(msg, reply)
+}
+
+func (c *VKCommandConsumer) handleAddFeatureReleaseLabelCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	var subs []models.RepositorySubscription
+	c.db.Where("chat_id = ?", chat.ID).Preload("Repository").Find(&subs)
+	if len(subs) == 0 {
+		c.sendReply(msg, "No repository subscription found. Use /subscribe first.")
+		return
+	}
+
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/add_feature_release_tag"))
+	if argStr == "" {
+		c.sendReply(msg, "Usage: /add_feature_release_tag <label_name> [#hexcolor]\nDefault color: #9370DB (purple)")
+		return
+	}
+
+	parts := strings.Fields(argStr)
+	labelName := parts[0]
+	color := defaultFeatureReleaseLabelColor
+
+	if len(parts) >= 2 {
+		lastPart := parts[len(parts)-1]
+		if strings.HasPrefix(lastPart, "#") && isValidHexColor(lastPart) {
+			color = lastPart
+			if len(parts) > 2 {
+				labelName = strings.Join(parts[:len(parts)-1], " ")
+			}
+		} else {
+			labelName = argStr
+		}
+	}
+
+	var successRepos []string
+	var failedRepos []string
+
+	for _, sub := range subs {
+		repo := sub.Repository
+
+		labels, _, err := c.glClient.Labels.ListLabels(repo.GitlabID, &gitlab.ListLabelsOptions{
+			Search: gitlab.Ptr(labelName),
+		})
+
+		labelExists := false
+		if err == nil {
+			for _, l := range labels {
+				if l.Name == labelName {
+					labelExists = true
+					break
+				}
+			}
+		}
+
+		if !labelExists {
+			_, _, err := c.glClient.Labels.CreateLabel(repo.GitlabID, &gitlab.CreateLabelOptions{
+				Name:  gitlab.Ptr(labelName),
+				Color: gitlab.Ptr(color),
+			})
+			if err != nil {
+				log.Printf("failed to create label %s in repo %d: %v", labelName, repo.GitlabID, err)
+				failedRepos = append(failedRepos, repo.Name)
+				continue
+			}
+		}
+
+		frl := models.FeatureReleaseLabel{
+			RepositoryID: repo.ID,
+			LabelName:    labelName,
+		}
+		if err := c.db.FirstOrCreate(&frl, models.FeatureReleaseLabel{
+			RepositoryID: repo.ID,
+			LabelName:    labelName,
+		}).Error; err != nil {
+			log.Printf("failed to save feature release label %s for repo %d: %v", labelName, repo.ID, err)
+			failedRepos = append(failedRepos, repo.Name)
+			continue
+		}
+
+		successRepos = append(successRepos, repo.Name)
+	}
+
+	var reply string
+	if len(successRepos) > 0 {
+		reply = fmt.Sprintf("Feature release label '%s' added for: %s", labelName, strings.Join(successRepos, ", "))
+	}
+	if len(failedRepos) > 0 {
+		if reply != "" {
+			reply += "\n"
+		}
+		reply += fmt.Sprintf("Failed for: %s", strings.Join(failedRepos, ", "))
+	}
+	if reply == "" {
+		reply = "No repositories were updated."
+	}
+	c.sendReply(msg, reply)
+}
+
+func (c *VKCommandConsumer) handleSpawnBranchCommand(msg *botgolang.Message, _ botgolang.Contact) {
+	chatID := fmt.Sprint(msg.Chat.ID)
+	var chat models.Chat
+	if err := c.db.Where("chat_id = ?", chatID).First(&chat).Error; err != nil {
+		c.sendReply(msg, "Chat not found")
+		return
+	}
+
+	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/spawn_branch"))
+	if argStr == "" {
+		c.sendReply(msg, "Usage: /spawn_branch <gitlab_project_id or project_name>")
+		return
+	}
+
+	// Resolve repo by GitLab ID or name
+	var repo models.Repository
+	gitlabID, err := strconv.Atoi(argStr)
+	if err == nil {
+		err = c.db.Where("gitlab_id = ?", gitlabID).First(&repo).Error
+	} else {
+		err = c.db.Where("name = ?", argStr).First(&repo).Error
+	}
+	if err != nil {
+		c.sendReply(msg, fmt.Sprintf("Repository not found: %s", argStr))
+		return
+	}
+
+	// Verify the chat is subscribed to this repo
+	var sub models.RepositorySubscription
+	if err := c.db.Where("chat_id = ? AND repository_id = ?", chat.ID, repo.ID).First(&sub).Error; err != nil {
+		c.sendReply(msg, fmt.Sprintf("Chat is not subscribed to %s. Use /subscribe first.", repo.Name))
+		return
+	}
+
+	// Verify feature release label exists
+	var featureReleaseLabel models.FeatureReleaseLabel
+	if err := c.db.Where("repository_id = ?", repo.ID).First(&featureReleaseLabel).Error; err != nil {
+		c.sendReply(msg, "Feature release label not configured. Use /add_feature_release_tag first.")
+		return
+	}
+
+	// Verify auto-release config exists (need dev branch name)
+	var autoReleaseConfig models.AutoReleaseBranchConfig
+	if err := c.db.Where("repository_id = ?", repo.ID).First(&autoReleaseConfig).Error; err != nil {
+		c.sendReply(msg, "Auto-release branch not configured. Use /auto_release_branch first (needed to know the dev branch).")
+		return
+	}
+
+	devBranch := autoReleaseConfig.DevBranchName
+
+	// Get dev branch HEAD SHA
+	branch, _, err := c.glClient.Branches.GetBranch(repo.GitlabID, devBranch)
+	if err != nil {
+		c.sendReply(msg, fmt.Sprintf("Failed to get dev branch '%s': %v", devBranch, err))
+		return
+	}
+
+	sha := branch.Commit.ID
+	shortSHA := sha
+	if len(sha) > 6 {
+		shortSHA = sha[:6]
+	}
+
+	branchName := fmt.Sprintf("feature_release_%s_%s",
+		time.Now().Format("2006-01-02"),
+		shortSHA,
+	)
+
+	// Create branch in GitLab
+	_, _, err = c.glClient.Branches.CreateBranch(repo.GitlabID, &gitlab.CreateBranchOptions{
+		Branch: gitlab.Ptr(branchName),
+		Ref:    gitlab.Ptr(devBranch),
+	})
+	if err != nil {
+		c.sendReply(msg, fmt.Sprintf("Failed to create branch %s: %v", branchName, err))
+		return
+	}
+
+	// Create MR: feature_release branch → dev branch
+	title := fmt.Sprintf("Feature Release %s", time.Now().Format("2006-01-02"))
+	mrResult, _, err := c.glClient.MergeRequests.CreateMergeRequest(repo.GitlabID, &gitlab.CreateMergeRequestOptions{
+		SourceBranch: gitlab.Ptr(branchName),
+		TargetBranch: gitlab.Ptr(devBranch),
+		Title:        gitlab.Ptr(title),
+		Labels:       &gitlab.LabelOptions{featureReleaseLabel.LabelName},
+	})
+	if err != nil {
+		c.sendReply(msg, fmt.Sprintf("Branch %s created, but failed to create MR: %v", branchName, err))
+		return
+	}
+
+	// Save feature release branch record
+	frb := models.FeatureReleaseBranch{
+		RepositoryID:       repo.ID,
+		BranchName:         branchName,
+		MergeRequestIID:    mrResult.IID,
+		MergeRequestWebURL: mrResult.WebURL,
+	}
+	if err := c.db.Create(&frb).Error; err != nil {
+		log.Printf("failed to save feature release branch record: %v", err)
+	}
+
+	c.sendReply(msg, fmt.Sprintf("Feature release branch created for %s:\nBranch: %s\nMR: %s", repo.Name, branchName, mrResult.WebURL))
 }
 
 func (c *VKCommandConsumer) handleAddJiraPrefixCommand(msg *botgolang.Message, _ botgolang.Contact) {

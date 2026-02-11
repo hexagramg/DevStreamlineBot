@@ -66,7 +66,14 @@ func (c *AutoReleaseConsumer) processRepoReleaseBranch(config models.AutoRelease
 		return
 	}
 
-	c.retargetOrphanedMRs(repo.GitlabID, config.DevBranchName, releaseLabel.LabelName)
+	var featureReleaseLabels []models.FeatureReleaseLabel
+	c.db.Where("repository_id = ?", config.RepositoryID).Find(&featureReleaseLabels)
+	featureReleaseLabelNames := make(map[string]bool)
+	for _, frl := range featureReleaseLabels {
+		featureReleaseLabelNames[frl.LabelName] = true
+	}
+
+	c.retargetOrphanedMRs(repo.GitlabID, config.DevBranchName, releaseLabel.LabelName, featureReleaseLabelNames)
 
 	openReleaseMR := c.findOpenReleaseMR(repo.GitlabID, releaseLabel.LabelName)
 
@@ -103,6 +110,7 @@ func (c *AutoReleaseConsumer) processRepoReleaseBranch(config models.AutoRelease
 		currentReleaseBranch,
 		releaseLabel.LabelName,
 		blockLabelNames,
+		featureReleaseLabelNames,
 	)
 }
 
@@ -176,6 +184,7 @@ func (c *AutoReleaseConsumer) retargetMRsToReleaseBranch(
 	releaseBranch string,
 	releaseLabel string,
 	blockLabelNames map[string]bool,
+	featureReleaseLabelNames map[string]bool,
 ) {
 	opts := &gitlab.ListProjectMergeRequestsOptions{
 		State:        gitlab.Ptr("opened"),
@@ -197,6 +206,10 @@ func (c *AutoReleaseConsumer) retargetMRsToReleaseBranch(
 
 			if hasAnyLabel(mr.Labels, blockLabelNames) {
 				log.Printf("Skipping MR !%d (has block label)", mr.IID)
+				continue
+			}
+
+			if hasAnyLabel(mr.Labels, featureReleaseLabelNames) {
 				continue
 			}
 
@@ -244,20 +257,24 @@ func (c *AutoReleaseConsumer) updateReleaseMRDescription(config models.AutoRelea
 		return
 	}
 
-	commits, err := c.getMergeRequestCommits(repo.GitlabID, releaseMR.IID)
+	c.updateMRDescriptionFromCommits(repo.GitlabID, releaseMR.IID, releaseMR.ID)
+}
+
+func (c *AutoReleaseConsumer) updateMRDescriptionFromCommits(projectID, mrIID, mrGitlabID int) {
+	commits, err := c.getMergeRequestCommits(projectID, mrIID)
 	if err != nil {
-		log.Printf("Failed to get commits for release MR !%d: %v", releaseMR.IID, err)
+		log.Printf("Failed to get commits for MR !%d: %v", mrIID, err)
 		return
 	}
 
-	includedMRs := c.extractIncludedMRs(commits, repo.GitlabID)
+	includedMRs := c.extractIncludedMRs(commits, projectID)
 	if len(includedMRs) == 0 {
 		return
 	}
 
-	fullMR, _, err := c.mrService.GetMergeRequest(repo.GitlabID, releaseMR.IID, nil)
+	fullMR, _, err := c.mrService.GetMergeRequest(projectID, mrIID, nil)
 	if err != nil {
-		log.Printf("Failed to get full MR details for !%d: %v", releaseMR.IID, err)
+		log.Printf("Failed to get full MR details for !%d: %v", mrIID, err)
 		return
 	}
 
@@ -266,22 +283,46 @@ func (c *AutoReleaseConsumer) updateReleaseMRDescription(config models.AutoRelea
 		return
 	}
 
-	_, _, err = c.mrService.UpdateMergeRequest(repo.GitlabID, releaseMR.IID,
+	_, _, err = c.mrService.UpdateMergeRequest(projectID, mrIID,
 		&gitlab.UpdateMergeRequestOptions{
 			Description: gitlab.Ptr(newDescription),
 		})
 	if err != nil {
-		log.Printf("Failed to update release MR !%d description: %v", releaseMR.IID, err)
+		log.Printf("Failed to update MR !%d description: %v", mrIID, err)
 		return
 	}
 
 	if err := c.db.Model(&models.MergeRequest{}).
-		Where("gitlab_id = ?", releaseMR.ID).
+		Where("gitlab_id = ?", mrGitlabID).
 		Update("description", newDescription).Error; err != nil {
-		log.Printf("Failed to update local MR description for GitLab MR %d: %v", releaseMR.ID, err)
+		log.Printf("Failed to update local MR description for GitLab MR %d: %v", mrGitlabID, err)
 	}
 
-	log.Printf("Updated release MR !%d description with %d included MRs", releaseMR.IID, len(includedMRs))
+	log.Printf("Updated MR !%d description with %d included MRs", mrIID, len(includedMRs))
+}
+
+// ProcessFeatureReleaseMRDescriptions updates descriptions for open feature release MRs.
+func (c *AutoReleaseConsumer) ProcessFeatureReleaseMRDescriptions() {
+	var branches []models.FeatureReleaseBranch
+	if err := c.db.Preload("Repository").Find(&branches).Error; err != nil {
+		log.Printf("failed to fetch feature release branches: %v", err)
+		return
+	}
+
+	for _, frb := range branches {
+		// Check if the MR is still open in the local DB
+		var mr models.MergeRequest
+		if err := c.db.Where("iid = ? AND repository_id = ?", frb.MergeRequestIID, frb.RepositoryID).
+			First(&mr).Error; err != nil {
+			continue
+		}
+
+		if mr.State != "opened" {
+			continue
+		}
+
+		c.updateMRDescriptionFromCommits(frb.Repository.GitlabID, frb.MergeRequestIID, mr.GitlabID)
+	}
 }
 
 type includedMR struct {
@@ -513,7 +554,7 @@ func (c *AutoReleaseConsumer) branchExists(projectID int, branchName string) boo
 	return true
 }
 
-func (c *AutoReleaseConsumer) retargetOrphanedMRs(projectID int, devBranch string, releaseLabel string) {
+func (c *AutoReleaseConsumer) retargetOrphanedMRs(projectID int, devBranch string, releaseLabel string, featureReleaseLabelNames map[string]bool) {
 	branchExistsCache := make(map[string]bool)
 
 	opts := &gitlab.ListProjectMergeRequestsOptions{
@@ -530,6 +571,10 @@ func (c *AutoReleaseConsumer) retargetOrphanedMRs(projectID int, devBranch strin
 
 		for _, mr := range mrs {
 			if hasLabel(mr.Labels, releaseLabel) {
+				continue
+			}
+
+			if hasAnyLabel(mr.Labels, featureReleaseLabelNames) {
 				continue
 			}
 

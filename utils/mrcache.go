@@ -9,8 +9,9 @@ import (
 // MRDataCache holds preloaded data for batch MR processing to avoid N+1 queries.
 type MRDataCache struct {
 	// Label caches - keyed by RepositoryID
-	BlockLabels   map[uint]map[string]struct{}
-	ReleaseLabels map[uint]map[string]struct{}
+	BlockLabels          map[uint]map[string]struct{}
+	ReleaseLabels        map[uint]map[string]struct{}
+	FeatureReleaseLabels map[uint]map[string]struct{}
 
 	// SLA cache - keyed by RepositoryID
 	SLAs map[uint]*models.RepositorySLA
@@ -34,6 +35,7 @@ func LoadMRDataCache(db *gorm.DB, mrIDs []uint, repoIDs []uint) (*MRDataCache, e
 	cache := &MRDataCache{
 		BlockLabels:          make(map[uint]map[string]struct{}),
 		ReleaseLabels:        make(map[uint]map[string]struct{}),
+		FeatureReleaseLabels: make(map[uint]map[string]struct{}),
 		SLAs:                 make(map[uint]*models.RepositorySLA),
 		Holidays:             make(map[uint]map[string]bool),
 		Actions:              make(map[uint][]models.MRAction),
@@ -68,6 +70,18 @@ func LoadMRDataCache(db *gorm.DB, mrIDs []uint, repoIDs []uint) (*MRDataCache, e
 				cache.ReleaseLabels[rl.RepositoryID] = make(map[string]struct{})
 			}
 			cache.ReleaseLabels[rl.RepositoryID][rl.LabelName] = struct{}{}
+		}
+
+		// Load feature release labels for all repos
+		var featureReleaseLabels []models.FeatureReleaseLabel
+		if err := db.Where("repository_id IN ?", repoIDs).Find(&featureReleaseLabels).Error; err != nil {
+			return nil, err
+		}
+		for _, frl := range featureReleaseLabels {
+			if cache.FeatureReleaseLabels[frl.RepositoryID] == nil {
+				cache.FeatureReleaseLabels[frl.RepositoryID] = make(map[string]struct{})
+			}
+			cache.FeatureReleaseLabels[frl.RepositoryID][frl.LabelName] = struct{}{}
 		}
 
 		// Load SLAs for all repos
@@ -133,14 +147,21 @@ func (c *MRDataCache) GetSLAFromCache(repoID uint) *models.RepositorySLA {
 	}
 }
 
-// HasReleaseLabelFromCache checks if MR has a release label using cached data.
+// HasReleaseLabelFromCache checks if MR has a release or feature release label using cached data.
 func (c *MRDataCache) HasReleaseLabelFromCache(labels []models.Label, repoID uint) bool {
+	if len(labels) == 0 {
+		return false
+	}
 	releaseLabels := c.ReleaseLabels[repoID]
-	if len(labels) == 0 || len(releaseLabels) == 0 {
+	featureReleaseLabels := c.FeatureReleaseLabels[repoID]
+	if len(releaseLabels) == 0 && len(featureReleaseLabels) == 0 {
 		return false
 	}
 	for _, l := range labels {
 		if _, ok := releaseLabels[l.Name]; ok {
+			return true
+		}
+		if _, ok := featureReleaseLabels[l.Name]; ok {
 			return true
 		}
 	}

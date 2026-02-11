@@ -1151,7 +1151,7 @@ func TestRetargetOrphanedMRs_RetargetsMRsWithDeletedTargetBranch(t *testing.T) {
 	}
 
 	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
-	consumer.retargetOrphanedMRs(123, "develop", "release")
+	consumer.retargetOrphanedMRs(123, "develop", "release", nil)
 
 	if len(mockMRs.UpdateMergeRequestCalls) != 1 {
 		t.Fatalf("expected 1 UpdateMergeRequest call, got %d", len(mockMRs.UpdateMergeRequestCalls))
@@ -1188,7 +1188,7 @@ func TestRetargetOrphanedMRs_SkipsMRsAlreadyTargetingDev(t *testing.T) {
 	mockBranches := &mocks.MockBranchesService{}
 
 	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
-	consumer.retargetOrphanedMRs(123, "develop", "release")
+	consumer.retargetOrphanedMRs(123, "develop", "release", nil)
 
 	// Should not retarget MRs already targeting dev
 	if len(mockMRs.UpdateMergeRequestCalls) != 0 {
@@ -1223,7 +1223,7 @@ func TestRetargetOrphanedMRs_SkipsMRsWithReleaseLabel(t *testing.T) {
 	mockBranches := &mocks.MockBranchesService{}
 
 	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
-	consumer.retargetOrphanedMRs(123, "develop", "release")
+	consumer.retargetOrphanedMRs(123, "develop", "release", nil)
 
 	// Should not retarget release MRs
 	if len(mockMRs.UpdateMergeRequestCalls) != 0 {
@@ -1257,7 +1257,7 @@ func TestRetargetOrphanedMRs_IncludesBlockedMRs(t *testing.T) {
 	}
 
 	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
-	consumer.retargetOrphanedMRs(123, "develop", "release")
+	consumer.retargetOrphanedMRs(123, "develop", "release", nil)
 
 	// Should retarget blocked MRs (unlike normal retargeting which skips them)
 	if len(mockMRs.UpdateMergeRequestCalls) != 1 {
@@ -1302,7 +1302,7 @@ func TestRetargetOrphanedMRs_CachesBranchExistenceChecks(t *testing.T) {
 	}
 
 	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
-	consumer.retargetOrphanedMRs(123, "develop", "release")
+	consumer.retargetOrphanedMRs(123, "develop", "release", nil)
 
 	// Should only check branch existence once (cached)
 	if len(mockBranches.GetBranchCalls) != 1 {
@@ -1341,7 +1341,7 @@ func TestRetargetOrphanedMRs_DoesNotRetargetWhenBranchExists(t *testing.T) {
 	}
 
 	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
-	consumer.retargetOrphanedMRs(123, "develop", "release")
+	consumer.retargetOrphanedMRs(123, "develop", "release", nil)
 
 	// Should not retarget MRs targeting existing branches
 	if len(mockMRs.UpdateMergeRequestCalls) != 0 {

@@ -326,6 +326,26 @@ type ReleaseReadyLabel struct {
 	LabelName    string     `gorm:"not null;uniqueIndex:idx_release_ready_label_unique,priority:2"`
 }
 
+// FeatureReleaseLabel stores labels that mark feature release MRs.
+// Like ReleaseLabel, MRs with feature release labels are excluded from reviewer assignment and digests.
+type FeatureReleaseLabel struct {
+	gorm.Model
+	RepositoryID uint       `gorm:"not null;uniqueIndex:idx_feature_release_label_unique,priority:1"`
+	Repository   Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	LabelName    string     `gorm:"not null;uniqueIndex:idx_feature_release_label_unique,priority:2"`
+}
+
+// FeatureReleaseBranch tracks manually-created feature release branches.
+// Multiple feature release branches can coexist per repository.
+type FeatureReleaseBranch struct {
+	gorm.Model
+	RepositoryID       uint       `gorm:"not null;index"`
+	Repository         Repository `gorm:"constraint:OnDelete:CASCADE;"`
+	BranchName         string     `gorm:"not null"`
+	MergeRequestIID    int        `gorm:"not null"`
+	MergeRequestWebURL string     `gorm:"not null"`
+}
+
 // JiraProjectPrefix stores Jira project prefixes per repository for task ID extraction.
 type JiraProjectPrefix struct {
 	gorm.Model

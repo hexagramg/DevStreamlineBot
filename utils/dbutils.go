@@ -81,6 +81,14 @@ func HasReleaseLabel(db *gorm.DB, mr *models.MergeRequest) bool {
 		Where("repository_id = ? AND label_name IN ?", mr.RepositoryID, labelNames).
 		Count(&count)
 
+	if count > 0 {
+		return true
+	}
+
+	db.Model(&models.FeatureReleaseLabel{}).
+		Where("repository_id = ? AND label_name IN ?", mr.RepositoryID, labelNames).
+		Count(&count)
+
 	return count > 0
 }
 
