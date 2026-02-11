@@ -80,6 +80,7 @@ func (c *ReleaseNotificationConsumer) processNewReleaseAction(action models.MRAc
 	}
 
 	if !hasReleaseLabel {
+		log.Printf("release notification skipped for MR %d: no release label found among %d labels", mr.ID, len(mr.Labels))
 		c.markActionNotified(action.ID)
 		return
 	}
@@ -94,6 +95,7 @@ func (c *ReleaseNotificationConsumer) processNewReleaseAction(action models.MRAc
 	}
 
 	if len(subs) == 0 {
+		log.Printf("release notification skipped for MR %d: no release subscriptions for repo %d", mr.ID, mr.RepositoryID)
 		c.markActionNotified(action.ID)
 		return
 	}
@@ -103,14 +105,13 @@ func (c *ReleaseNotificationConsumer) processNewReleaseAction(action models.MRAc
 	message := fmt.Sprintf("Новый релиз %s %s: [Release MR](%s)\n\n%s", repo.Name, releaseDate, mr.WebURL, description)
 
 	for _, sub := range subs {
-		msg := c.vkBot.NewMarkdownMessage(sub.Chat.ChatID, message)
-		if err := msg.Send(); err != nil {
+		if err := c.sendMarkdownWithFallback(sub.Chat.ChatID, message); err != nil {
 			log.Printf("failed to send release notification to chat %s: %v", sub.Chat.ChatID, err)
 		}
 	}
 
 	c.db.Create(&models.MRNotificationState{
-		MergeRequestID:  mr.ID,
+		MergeRequestID:      mr.ID,
 		NotifiedDescription: mr.Description,
 	})
 
@@ -206,6 +207,7 @@ func (c *ReleaseNotificationConsumer) notifyDescriptionChanges(releaseMR models.
 	err := c.db.Where("merge_request_id = ?", releaseMR.ID).
 		Order("created_at desc").First(&latest).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
+		log.Printf("seeding notification state for MR %d (first encounter)", releaseMR.ID)
 		c.db.Create(&models.MRNotificationState{
 			MergeRequestID:      releaseMR.ID,
 			NotifiedDescription: releaseMR.Description,
@@ -251,8 +253,7 @@ func (c *ReleaseNotificationConsumer) notifyDescriptionChanges(releaseMR models.
 	message := fmt.Sprintf("%s %s\n%s", header, repo.Name, strings.Join(newEntries, "\n"))
 
 	for _, sub := range subs {
-		msg := c.vkBot.NewMarkdownMessage(sub.Chat.ChatID, message)
-		if err := msg.Send(); err != nil {
+		if err := c.sendMarkdownWithFallback(sub.Chat.ChatID, message); err != nil {
 			log.Printf("failed to send release update notification to chat %s: %v", sub.Chat.ChatID, err)
 		}
 	}
@@ -265,6 +266,8 @@ func (c *ReleaseNotificationConsumer) notifyDescriptionChanges(releaseMR models.
 
 	log.Printf("Sent release update notification for MR %d (%s) with %d new entries", releaseMR.ID, repo.Name, len(newEntries))
 }
+
+var linkRegex = regexp.MustCompile(`\[([^\]]*)\]\(([^)]*)\)`)
 
 func convertToVKMarkdown(text string) string {
 	lines := strings.Split(text, "\n")
@@ -284,6 +287,17 @@ func convertToVKMarkdown(text string) string {
 		} else if strings.HasPrefix(trimmed, "### ") {
 			line = strings.TrimPrefix(trimmed, "### ")
 		}
+
+		// Replace parentheses in link text with spaces for MarkdownV2 compatibility
+		line = linkRegex.ReplaceAllStringFunc(line, func(match string) string {
+			parts := linkRegex.FindStringSubmatch(match)
+			if len(parts) == 3 {
+				cleaned := strings.ReplaceAll(parts[1], "(", " ")
+				cleaned = strings.ReplaceAll(cleaned, ")", " ")
+				return "[" + cleaned + "](" + parts[2] + ")"
+			}
+			return match
+		})
 
 		result = append(result, line)
 	}
@@ -317,6 +331,18 @@ func extractNewEntries(oldDesc, newDesc string) []string {
 	}
 
 	return newEntries
+}
+
+func (c *ReleaseNotificationConsumer) sendMarkdownWithFallback(chatID, text string) error {
+	msg := c.vkBot.NewMarkdownMessage(chatID, text)
+	if err := msg.Send(); err != nil {
+		if strings.Contains(err.Error(), "Format error") {
+			log.Printf("markdown rejected for chat %s, retrying as plain text", chatID)
+			return c.vkBot.NewTextMessage(chatID, text).Send()
+		}
+		return err
+	}
+	return nil
 }
 
 func (c *ReleaseNotificationConsumer) markActionNotified(actionID uint) {
