@@ -11,6 +11,8 @@ A bot that automates code review assignments in GitLab. It integrates with VK Te
 - **Personal daily digests**: Get personalized daily action items sent to DMs (weekdays only, skips holidays)
 - **Vacation management**: Mark users as on vacation to exclude them from reviewer selection
 - **Auto-release branches**: Automatically create release branches, retarget MRs, and maintain release MR descriptions with included changes
+- **Feature release branches**: Create and manage feature-specific release branches in parallel with regular releases
+- **Deploy tracking**: Monitor GitLab deploy jobs and receive notifications on deployment status changes
 - **Jira integration**: Extract Jira task IDs from branch names or MR titles for linking
 - **Release-ready labels**: Mark MRs as ready for release with dedicated labels
 - **Release notifications**: Subscribe chats to get notified when MRs are marked release-ready
@@ -149,6 +151,7 @@ Add the bot to a VK Teams chat and use these commands:
 | `/add_block_label <label> [#color]` | Add block label(s) to repos (default: #dc143c). MRs with block labels are excluded from auto-retargeting |
 | `/add_release_label <label> [#color]` | Add release label to repos (default: #808080). Required for auto-release branches |
 | `/add_release_ready_label <label> [#color]` | Add release-ready label (default: #FFD700). Marks MRs as ready for release |
+| `/add_feature_release_tag <label> [#color]` | Add feature release label (default: #9370DB). Marks MRs as feature releases |
 | `/add_jira_prefix <PREFIX>` | Configure Jira project prefix for task ID extraction from branch names/MR titles |
 | `/ensure_label <label> <#color>` | Create label in GitLab if it doesn't exist |
 
@@ -162,8 +165,16 @@ Add the bot to a VK Teams chat and use these commands:
 | `/release_managers` | List current release managers |
 | `/release_subscribe <repo_id>` | Subscribe chat to release notifications (notified when MRs are marked release-ready) |
 | `/release_unsubscribe <repo_id>` | Unsubscribe from release notifications |
+| `/spawn_branch <project_id or project_name>` | Create a new feature release branch with MR |
 
-**Note**: Auto-release branch functionality requires a release label to be configured (`/add_release_label`). Release notifications require a release-ready label (`/add_release_ready_label`).
+### Deploy Tracking
+
+| Command | Description |
+|---------|-------------|
+| `/track_deploy <pipeline_job_link> <target_project_id>` | Monitor a GitLab deploy job and send notifications to chats subscribed to the target repo's releases |
+| `/untrack_deploy <project_id>` | Remove all deploy tracking rules for a repository |
+
+**Note**: Auto-release branch functionality requires a release label to be configured (`/add_release_label`). Release notifications require a release-ready label (`/add_release_ready_label`). Feature release branches require both a feature release label (`/add_feature_release_tag`) and auto-release config.
 
 ## How It Works
 
@@ -210,6 +221,31 @@ When enabled, the bot automates release branch management:
 **Requirements**:
 - Repository must have a release label configured (used to identify release MRs)
 - Optional: Configure block labels to prevent specific MRs from being retargeted
+
+### Feature Release Branches
+
+For managing feature-specific releases in parallel with regular releases:
+
+1. **Configure feature release label**: Use `/add_feature_release_tag <label>` to set up a label (default color: purple #9370DB)
+2. **Create feature branch**: Use `/spawn_branch <project>` to create a feature release branch
+   - Creates a branch named `feature_release_YYYY-MM-DD_SHA6` from the dev branch
+   - Automatically creates an MR targeting the dev branch with the feature release label
+3. **Description updates**: The bot keeps the feature release MR description updated with included commits
+4. **Isolation**: MRs with feature release labels are excluded from regular release retargeting and review digests
+
+**Requirements**: Feature release label configured (`/add_feature_release_tag`) and auto-release config present (`/auto_release_branch`).
+
+### Deploy Tracking
+
+Monitor GitLab CI/CD deploy jobs and receive chat notifications on status changes:
+
+1. **Set up tracking**: Use `/track_deploy <job_url> <target_project_id>` with a link to a GitLab pipeline job
+2. **Notifications**: The bot polls for job status changes and sends notifications to chats with release subscriptions for the target repo:
+   - Job started running
+   - Job succeeded
+   - Job failed
+   - Job canceled
+3. **Remove tracking**: Use `/untrack_deploy <project_id>` to stop monitoring
 
 ### Release-Ready Workflow
 
