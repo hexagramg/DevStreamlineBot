@@ -106,12 +106,14 @@ func main() {
 
 		for _, p := range projects {
 			repo := models.Repository{
-				GitlabID:    p.ID,
-				Name:        p.Name,
-				Description: p.Description,
-				WebURL:      p.WebURL,
+				GitlabID:          p.ID,
+				Name:              p.Name,
+				Path:              p.Path,
+				PathWithNamespace: p.PathWithNamespace,
+				Description:       p.Description,
+				WebURL:            p.WebURL,
 			}
-			db.FirstOrCreate(&repo, models.Repository{GitlabID: p.ID})
+			db.Where(models.Repository{GitlabID: p.ID}).Assign(repo).FirstOrCreate(&models.Repository{})
 		}
 
 		if resp.NextPage == 0 {

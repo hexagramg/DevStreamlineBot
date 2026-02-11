@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -2377,5 +2378,88 @@ func TestGetActiveReviewers_ReviewerBActiveAfterAuthorReply(t *testing.T) {
 	activeReviewers := result[mr.ID]
 	if len(activeReviewers) != 2 {
 		t.Errorf("expected 2 active reviewers (author replied), got %d", len(activeReviewers))
+	}
+}
+
+func TestFindRepositoryByIdentifier_ByGitlabID(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	rf := testutils.NewRepositoryFactory(db)
+	repo := rf.Create(testutils.WithRepoGitlabID(13122), testutils.WithRepoPath("jobofferapp"), testutils.WithRepoPathWithNamespace("intdev/jobofferapp"))
+
+	found, err := FindRepositoryByIdentifier(db, "13122")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found.ID != repo.ID {
+		t.Errorf("expected repo ID %d, got %d", repo.ID, found.ID)
+	}
+}
+
+func TestFindRepositoryByIdentifier_ByPathWithNamespace(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	rf := testutils.NewRepositoryFactory(db)
+	repo := rf.Create(testutils.WithRepoPath("jobofferapp"), testutils.WithRepoPathWithNamespace("intdev/jobofferapp"))
+
+	found, err := FindRepositoryByIdentifier(db, "intdev/jobofferapp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found.ID != repo.ID {
+		t.Errorf("expected repo ID %d, got %d", repo.ID, found.ID)
+	}
+}
+
+func TestFindRepositoryByIdentifier_ByPath(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	rf := testutils.NewRepositoryFactory(db)
+	repo := rf.Create(testutils.WithRepoPath("jobofferapp"), testutils.WithRepoPathWithNamespace("intdev/jobofferapp"))
+
+	found, err := FindRepositoryByIdentifier(db, "jobofferapp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found.ID != repo.ID {
+		t.Errorf("expected repo ID %d, got %d", repo.ID, found.ID)
+	}
+}
+
+func TestFindRepositoryByIdentifier_AmbiguousPath(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	rf := testutils.NewRepositoryFactory(db)
+	rf.Create(testutils.WithRepoPath("myapp"), testutils.WithRepoPathWithNamespace("team1/myapp"))
+	rf.Create(testutils.WithRepoPath("myapp"), testutils.WithRepoPathWithNamespace("team2/myapp"))
+
+	_, err := FindRepositoryByIdentifier(db, "myapp")
+	if err == nil {
+		t.Fatal("expected error for ambiguous path, got nil")
+	}
+	if !strings.Contains(err.Error(), "multiple repositories") {
+		t.Errorf("expected ambiguity error, got: %v", err)
+	}
+}
+
+func TestFindRepositoryByIdentifier_ByNameFallback(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	rf := testutils.NewRepositoryFactory(db)
+	repo := rf.Create(testutils.WithRepoName("My Project"))
+
+	found, err := FindRepositoryByIdentifier(db, "My Project")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found.ID != repo.ID {
+		t.Errorf("expected repo ID %d, got %d", repo.ID, found.ID)
+	}
+}
+
+func TestFindRepositoryByIdentifier_NotFound(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	_, err := FindRepositoryByIdentifier(db, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent repo, got nil")
+	}
+	if !strings.Contains(err.Error(), "repository not found") {
+		t.Errorf("expected 'repository not found' error, got: %v", err)
 	}
 }

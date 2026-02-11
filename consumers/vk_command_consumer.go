@@ -676,8 +676,8 @@ func (c *VKCommandConsumer) handleGetMRInfoCommand(msg *botgolang.Message, _ bot
 	projectPath := ref[:bangIdx]
 	mrIID := ref[bangIdx+1:]
 
-	var repo models.Repository
-	if err := c.db.Where("web_url LIKE ?", "%"+projectPath+"%").First(&repo).Error; err != nil {
+	repo, err := utils.FindRepositoryByIdentifier(c.db, projectPath)
+	if err != nil {
 		c.sendReply(msg, "Repository not found for this reference.")
 		return
 	}
@@ -1905,20 +1905,13 @@ func (c *VKCommandConsumer) handleSpawnBranchCommand(msg *botgolang.Message, _ b
 
 	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/spawn_branch"))
 	if argStr == "" {
-		c.sendReply(msg, "Usage: /spawn_branch <gitlab_project_id or project_name>")
+		c.sendReply(msg, "Usage: /spawn_branch <gitlab_id or project_path>")
 		return
 	}
 
-	// Resolve repo by GitLab ID or name
-	var repo models.Repository
-	gitlabID, err := strconv.Atoi(argStr)
-	if err == nil {
-		err = c.db.Where("gitlab_id = ?", gitlabID).First(&repo).Error
-	} else {
-		err = c.db.Where("name = ?", argStr).First(&repo).Error
-	}
+	repo, err := utils.FindRepositoryByIdentifier(c.db, argStr)
 	if err != nil {
-		c.sendReply(msg, fmt.Sprintf("Repository not found: %s", argStr))
+		c.sendReply(msg, err.Error())
 		return
 	}
 

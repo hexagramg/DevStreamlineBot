@@ -36,12 +36,14 @@ func (d Duration) ToDuration() time.Duration {
 
 type Repository struct {
 	gorm.Model
-	GitlabID      int `gorm:"uniqueIndex;not null"`
-	Name          string
-	Description   string
-	WebURL        string
-	MergeRequests []MergeRequest
-	Subscriptions []RepositorySubscription
+	GitlabID          int    `gorm:"uniqueIndex;not null"`
+	Name              string
+	Path              string `gorm:"index"`
+	PathWithNamespace string `gorm:"index"`
+	Description       string
+	WebURL            string
+	MergeRequests     []MergeRequest
+	Subscriptions     []RepositorySubscription
 }
 
 type User struct {

@@ -2,10 +2,51 @@ package utils
 
 import (
 	"devstreamlinebot/models"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
 )
+
+// FindRepositoryByIdentifier resolves a repository by GitLab numeric ID,
+// path_with_namespace (e.g., "intdev/jobofferapp"), path slug (e.g., "jobofferapp"),
+// or name (fallback for backward compatibility).
+func FindRepositoryByIdentifier(db *gorm.DB, identifier string) (models.Repository, error) {
+	var repo models.Repository
+
+	if gitlabID, err := strconv.Atoi(identifier); err == nil {
+		if err := db.Where("gitlab_id = ?", gitlabID).First(&repo).Error; err == nil {
+			return repo, nil
+		}
+	}
+
+	if strings.Contains(identifier, "/") {
+		if err := db.Where("path_with_namespace = ?", identifier).First(&repo).Error; err == nil {
+			return repo, nil
+		}
+		return repo, fmt.Errorf("repository not found: %s", identifier)
+	}
+
+	var repos []models.Repository
+	if err := db.Where("path = ?", identifier).Find(&repos).Error; err == nil && len(repos) == 1 {
+		return repos[0], nil
+	} else if len(repos) > 1 {
+		paths := make([]string, len(repos))
+		for i, r := range repos {
+			paths[i] = r.PathWithNamespace
+		}
+		return repo, fmt.Errorf("multiple repositories match '%s', specify full path: %s",
+			identifier, strings.Join(paths, ", "))
+	}
+
+	if err := db.Where("name = ?", identifier).First(&repo).Error; err == nil {
+		return repo, nil
+	}
+
+	return repo, fmt.Errorf("repository not found: %s", identifier)
+}
 
 func FindDigestMergeRequests(db *gorm.DB, repoIDs []uint) ([]models.MergeRequest, error) {
 	var mrs []models.MergeRequest

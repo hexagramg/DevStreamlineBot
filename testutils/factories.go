@@ -123,13 +123,23 @@ func WithRepoGitlabID(id int) RepoOption {
 	return func(r *models.Repository) { r.GitlabID = id }
 }
 
+func WithRepoPath(path string) RepoOption {
+	return func(r *models.Repository) { r.Path = path }
+}
+
+func WithRepoPathWithNamespace(pathWithNamespace string) RepoOption {
+	return func(r *models.Repository) { r.PathWithNamespace = pathWithNamespace }
+}
+
 func (f *RepositoryFactory) Create(opts ...RepoOption) models.Repository {
 	f.counter++
 	repo := models.Repository{
-		GitlabID:    f.counter * 1000,
-		Name:        fmt.Sprintf("repo%d", f.counter),
-		Description: fmt.Sprintf("Test Repository %d", f.counter),
-		WebURL:      fmt.Sprintf("https://gitlab.example.com/group/repo%d", f.counter),
+		GitlabID:          f.counter * 1000,
+		Name:              fmt.Sprintf("repo%d", f.counter),
+		Path:              fmt.Sprintf("repo%d", f.counter),
+		PathWithNamespace: fmt.Sprintf("group/repo%d", f.counter),
+		Description:       fmt.Sprintf("Test Repository %d", f.counter),
+		WebURL:            fmt.Sprintf("https://gitlab.example.com/group/repo%d", f.counter),
 	}
 	for _, opt := range opts {
 		opt(&repo)

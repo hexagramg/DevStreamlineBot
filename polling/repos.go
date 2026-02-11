@@ -24,10 +24,12 @@ func PollRepositories(db *gorm.DB, client *gitlab.Client) {
 
 		for _, p := range projects {
 			repoData := models.Repository{
-				GitlabID:    p.ID,
-				Name:        p.Name,
-				Description: p.Description,
-				WebURL:      p.WebURL,
+				GitlabID:          p.ID,
+				Name:              p.Name,
+				Path:              p.Path,
+				PathWithNamespace: p.PathWithNamespace,
+				Description:       p.Description,
+				WebURL:            p.WebURL,
 			}
 			var repo models.Repository
 			if err := db.Where(models.Repository{GitlabID: repoData.GitlabID}).Assign(repoData).FirstOrCreate(&repo).Error; err != nil {
