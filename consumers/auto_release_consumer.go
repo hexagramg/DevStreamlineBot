@@ -310,9 +310,8 @@ func (c *AutoReleaseConsumer) ProcessFeatureReleaseMRDescriptions() {
 	}
 
 	for _, frb := range branches {
-		// Check if the MR is still open in the local DB
 		var mr models.MergeRequest
-		if err := c.db.Where("iid = ? AND repository_id = ?", frb.MergeRequestIID, frb.RepositoryID).
+		if err := c.db.Where("i_id = ? AND repository_id = ?", frb.MergeRequestIID, frb.RepositoryID).
 			First(&mr).Error; err != nil {
 			continue
 		}

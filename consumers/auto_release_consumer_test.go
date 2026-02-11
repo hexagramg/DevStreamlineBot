@@ -1776,3 +1776,199 @@ func TestExtractIncludedMRs_DoesNotOverwriteExistingJiraTaskID(t *testing.T) {
 		t.Errorf("expected DB JiraTaskID 'INTDEV-11111' (unchanged), got '%s'", updatedMR.JiraTaskID)
 	}
 }
+
+// --- ProcessFeatureReleaseMRDescriptions Tests ---
+
+func TestProcessFeatureReleaseMRDescriptions_NoBranches(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+
+	mockMRs := &mocks.MockMergeRequestsService{}
+	mockBranches := &mocks.MockBranchesService{}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
+	consumer.ProcessFeatureReleaseMRDescriptions()
+
+	if len(mockMRs.GetMergeRequestCommitsCalls) != 0 {
+		t.Errorf("expected no API calls, got %d", len(mockMRs.GetMergeRequestCommitsCalls))
+	}
+}
+
+func TestProcessFeatureReleaseMRDescriptions_MRNotInDB(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	db.Create(&models.FeatureReleaseBranch{
+		RepositoryID:       repo.ID,
+		BranchName:         "feature_release_2024-01-01_abc123",
+		MergeRequestIID:    10,
+		MergeRequestWebURL: "https://gitlab.com/mygroup/myproject/-/merge_requests/10",
+	})
+
+	// No MR record in DB — should skip silently
+	mockMRs := &mocks.MockMergeRequestsService{}
+	mockBranches := &mocks.MockBranchesService{}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
+	consumer.ProcessFeatureReleaseMRDescriptions()
+
+	if len(mockMRs.GetMergeRequestCommitsCalls) != 0 {
+		t.Errorf("expected no GetMergeRequestCommits calls, got %d", len(mockMRs.GetMergeRequestCommitsCalls))
+	}
+}
+
+func TestProcessFeatureReleaseMRDescriptions_MRClosed(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	author := userFactory.Create()
+	mr := mrFactory.Create(repo, author, testutils.WithMRState("merged"))
+
+	db.Create(&models.FeatureReleaseBranch{
+		RepositoryID:       repo.ID,
+		BranchName:         "feature_release_2024-01-01_abc123",
+		MergeRequestIID:    mr.IID,
+		MergeRequestWebURL: "https://gitlab.com/mygroup/myproject/-/merge_requests/10",
+	})
+
+	mockMRs := &mocks.MockMergeRequestsService{}
+	mockBranches := &mocks.MockBranchesService{}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
+	consumer.ProcessFeatureReleaseMRDescriptions()
+
+	if len(mockMRs.GetMergeRequestCommitsCalls) != 0 {
+		t.Errorf("expected no GetMergeRequestCommits calls when MR is merged, got %d", len(mockMRs.GetMergeRequestCommitsCalls))
+	}
+}
+
+func TestProcessFeatureReleaseMRDescriptions_AddsMRsToDescription(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	author := userFactory.Create()
+	mr := mrFactory.Create(repo, author, testutils.WithMRGitlabID(999))
+
+	db.Create(&models.FeatureReleaseBranch{
+		RepositoryID:       repo.ID,
+		BranchName:         "feature_release_2024-01-01_abc123",
+		MergeRequestIID:    mr.IID,
+		MergeRequestWebURL: "https://gitlab.com/mygroup/myproject/-/merge_requests/10",
+	})
+
+	mergeCommit := &gitlab.Commit{
+		ID:      "commit123",
+		Message: "Merge branch 'feature' into 'feature_release_2024-01-01_abc123'\n\nSee merge request mygroup/myproject!20",
+	}
+
+	includedMR := &gitlab.MergeRequest{
+		BasicMergeRequest: gitlab.BasicMergeRequest{
+			IID:    20,
+			Title:  "Add new feature",
+			WebURL: "https://gitlab.com/mygroup/myproject/-/merge_requests/20",
+			Author: &gitlab.BasicUser{Username: "alice"},
+		},
+	}
+
+	fullFeatureReleaseMR := &gitlab.MergeRequest{
+		BasicMergeRequest: gitlab.BasicMergeRequest{
+			ID:          999,
+			IID:         mr.IID,
+			Description: "Feature release description",
+		},
+	}
+
+	var updatedDescription string
+
+	mockMRs := &mocks.MockMergeRequestsService{
+		GetMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.GetMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			if mergeRequest == mr.IID {
+				return fullFeatureReleaseMR, mocks.NewMockResponse(0), nil
+			}
+			return includedMR, mocks.NewMockResponse(0), nil
+		},
+		GetMergeRequestCommitsFunc: func(pid interface{}, mergeRequest int, opt *gitlab.GetMergeRequestCommitsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.Commit, *gitlab.Response, error) {
+			return []*gitlab.Commit{mergeCommit}, mocks.NewMockResponse(0), nil
+		},
+		UpdateMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.UpdateMergeRequestOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			if opt.Description != nil {
+				updatedDescription = *opt.Description
+			}
+			return &gitlab.MergeRequest{BasicMergeRequest: gitlab.BasicMergeRequest{IID: mergeRequest}}, mocks.NewMockResponse(0), nil
+		},
+	}
+	mockBranches := &mocks.MockBranchesService{}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
+	consumer.ProcessFeatureReleaseMRDescriptions()
+
+	if len(mockMRs.UpdateMergeRequestCalls) != 1 {
+		t.Fatalf("expected 1 UpdateMergeRequest call, got %d", len(mockMRs.UpdateMergeRequestCalls))
+	}
+
+	if !strings.Contains(updatedDescription, "## Included MRs") {
+		t.Error("expected updated description to contain section header")
+	}
+
+	if !strings.Contains(updatedDescription, "[Add new feature]") {
+		t.Errorf("expected updated description to contain MR link, got: %s", updatedDescription)
+	}
+
+	if !strings.Contains(updatedDescription, "@alice") {
+		t.Errorf("expected updated description to contain author, got: %s", updatedDescription)
+	}
+}
+
+func TestProcessFeatureReleaseMRDescriptions_NoMergeCommits(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
+	author := userFactory.Create()
+	mr := mrFactory.Create(repo, author, testutils.WithMRGitlabID(999))
+
+	db.Create(&models.FeatureReleaseBranch{
+		RepositoryID:       repo.ID,
+		BranchName:         "feature_release_2024-01-01_abc123",
+		MergeRequestIID:    mr.IID,
+		MergeRequestWebURL: "https://gitlab.com/mygroup/myproject/-/merge_requests/10",
+	})
+
+	regularCommit := &gitlab.Commit{
+		ID:      "commit123",
+		Message: "Add some feature code",
+	}
+
+	fullFeatureReleaseMR := &gitlab.MergeRequest{
+		BasicMergeRequest: gitlab.BasicMergeRequest{
+			ID:          999,
+			IID:         mr.IID,
+			Description: "",
+		},
+	}
+
+	mockMRs := &mocks.MockMergeRequestsService{
+		GetMergeRequestFunc: func(pid interface{}, mergeRequest int, opt *gitlab.GetMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			return fullFeatureReleaseMR, mocks.NewMockResponse(0), nil
+		},
+		GetMergeRequestCommitsFunc: func(pid interface{}, mergeRequest int, opt *gitlab.GetMergeRequestCommitsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.Commit, *gitlab.Response, error) {
+			return []*gitlab.Commit{regularCommit}, mocks.NewMockResponse(0), nil
+		},
+	}
+	mockBranches := &mocks.MockBranchesService{}
+
+	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
+	consumer.ProcessFeatureReleaseMRDescriptions()
+
+	if len(mockMRs.UpdateMergeRequestCalls) != 0 {
+		t.Errorf("expected no UpdateMergeRequest calls when no merge commits, got %d", len(mockMRs.UpdateMergeRequestCalls))
+	}
+}

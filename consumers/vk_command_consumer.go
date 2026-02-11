@@ -683,7 +683,7 @@ func (c *VKCommandConsumer) handleGetMRInfoCommand(msg *botgolang.Message, _ bot
 	}
 
 	var mr models.MergeRequest
-	if err := c.db.Where("repository_id = ? AND iid = ?", repo.ID, mrIID).
+	if err := c.db.Where("repository_id = ? AND i_id = ?", repo.ID, mrIID).
 		Preload("Author").
 		Preload("Reviewers").
 		Preload("Approvers").
