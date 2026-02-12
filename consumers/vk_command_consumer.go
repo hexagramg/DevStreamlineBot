@@ -1992,7 +1992,7 @@ func (c *VKCommandConsumer) handleSpawnBranchCommand(msg *botgolang.Message, _ b
 		log.Printf("failed to save feature release branch record: %v", err)
 	}
 
-	c.sendReply(msg, fmt.Sprintf("Feature release branch created for %s:\nBranch: %s\nMR: %s", repo.Name, branchName, mrResult.WebURL))
+	c.sendReply(msg, fmt.Sprintf("Feature release branch created for %s:\nTitle: %s\nBranch: %s\nMR: %s", repo.Name, title, branchName, mrResult.WebURL))
 }
 
 func (c *VKCommandConsumer) handleAddJiraPrefixCommand(msg *botgolang.Message, _ botgolang.Contact) {
