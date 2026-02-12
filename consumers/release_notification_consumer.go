@@ -103,8 +103,8 @@ func (c *ReleaseNotificationConsumer) processNewReleaseAction(action models.MRAc
 
 	releaseDate := time.Now().Format("02.01.2006")
 	description := convertToVKHTML(mr.Description)
-	message := fmt.Sprintf("Новый релиз %s %s: <a href=\"%s\">Release MR</a>\n\n%s",
-		html.EscapeString(repo.Name), releaseDate, mr.WebURL, description)
+	message := fmt.Sprintf("Новый релиз %s %s (%s): <a href=\"%s\">Release MR</a>\n\n%s",
+		html.EscapeString(repo.Name), releaseDate, html.EscapeString(mr.Title), mr.WebURL, description)
 
 	for _, sub := range subs {
 		if err := c.sendHTMLWithFallback(sub.Chat.ChatID, message); err != nil {
@@ -252,7 +252,7 @@ func (c *ReleaseNotificationConsumer) notifyDescriptionChanges(releaseMR models.
 	if len(newEntries) > 1 {
 		header = "Добавлены задачи в релиз"
 	}
-	message := fmt.Sprintf("%s %s\n%s", header, repo.Name, strings.Join(newEntries, "\n"))
+	message := fmt.Sprintf("%s %s (%s)\n%s", header, html.EscapeString(repo.Name), html.EscapeString(releaseMR.Title), strings.Join(newEntries, "\n"))
 
 	for _, sub := range subs {
 		if err := c.sendHTMLWithFallback(sub.Chat.ChatID, message); err != nil {

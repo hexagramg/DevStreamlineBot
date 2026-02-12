@@ -165,7 +165,7 @@ Add the bot to a VK Teams chat and use these commands:
 | `/release_managers` | List current release managers |
 | `/release_subscribe <repo_id>` | Subscribe chat to release notifications (notified when MRs are marked release-ready) |
 | `/release_unsubscribe <repo_id>` | Unsubscribe from release notifications |
-| `/spawn_branch <project_id or project_name>` | Create a new feature release branch with MR |
+| `/spawn_branch <project_id or project_name> [custom name]` | Create a new feature release branch with MR. Optional custom name becomes MR title. |
 
 ### Deploy Tracking
 
@@ -227,9 +227,10 @@ When enabled, the bot automates release branch management:
 For managing feature-specific releases in parallel with regular releases:
 
 1. **Configure feature release label**: Use `/add_feature_release_tag <label>` to set up a label (default color: purple #9370DB)
-2. **Create feature branch**: Use `/spawn_branch <project>` to create a feature release branch
+2. **Create feature branch**: Use `/spawn_branch <project> [custom name]` to create a feature release branch
    - Creates a branch named `feature_release_YYYY-MM-DD_SHA6` from the dev branch
    - Automatically creates an MR targeting the dev branch with the feature release label
+   - Optional custom name becomes the MR title (defaults to "Feature Release YYYY-MM-DD")
 3. **Description updates**: The bot keeps the feature release MR description updated with included commits
 4. **Isolation**: MRs with feature release labels are excluded from regular release retargeting and review digests
 

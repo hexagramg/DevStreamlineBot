@@ -1,6 +1,7 @@
 package consumers
 
 import (
+	"crypto/rand"
 	"fmt"
 	"log"
 	"regexp"
@@ -134,24 +135,16 @@ func (c *AutoReleaseConsumer) findOpenReleaseMR(projectID int, releaseLabel stri
 }
 
 func (c *AutoReleaseConsumer) createReleaseBranch(projectID int, prefix, devBranch string) (string, error) {
-	branch, _, err := c.brService.GetBranch(projectID, devBranch)
-	if err != nil {
-		return "", fmt.Errorf("failed to get dev branch %s: %w", devBranch, err)
-	}
+	salt := make([]byte, 3)
+	rand.Read(salt)
 
-	sha := branch.Commit.ID
-	shortSHA := sha
-	if len(sha) > 6 {
-		shortSHA = sha[:6]
-	}
-
-	branchName := fmt.Sprintf("%s_%s_%s",
+	branchName := fmt.Sprintf("%s_%s_%x",
 		prefix,
 		time.Now().Format("2006-01-02"),
-		shortSHA,
+		salt,
 	)
 
-	_, _, err = c.brService.CreateBranch(projectID, &gitlab.CreateBranchOptions{
+	_, _, err := c.brService.CreateBranch(projectID, &gitlab.CreateBranchOptions{
 		Branch: gitlab.Ptr(branchName),
 		Ref:    gitlab.Ptr(devBranch),
 	})

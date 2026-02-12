@@ -378,7 +378,7 @@ func TestProcessNewReleaseNotifications_MessageFormat(t *testing.T) {
 
 	repo := repoFactory.Create(testutils.WithRepoName("TestRepo"))
 	author := userFactory.Create()
-	mr := mrFactory.Create(repo, author, testutils.WithLabels(db, "release"))
+	mr := mrFactory.Create(repo, author, testutils.WithTitle("Fixes for redesign"), testutils.WithLabels(db, "release"))
 	db.Model(&mr).Update("description", "Release description content")
 
 	testutils.CreateReleaseLabel(db, repo, "release")
@@ -400,6 +400,9 @@ func TestProcessNewReleaseNotifications_MessageFormat(t *testing.T) {
 	}
 	if !strings.Contains(msg, "TestRepo") {
 		t.Error("Message should contain repo name")
+	}
+	if !strings.Contains(msg, "Fixes for redesign") {
+		t.Error("Message should contain MR title")
 	}
 	if !strings.Contains(msg, "Release description content") {
 		t.Error("Message should contain MR description")
@@ -715,7 +718,7 @@ func TestProcessReleaseMRDescriptionChanges_MessageFormat(t *testing.T) {
 
 	repo := repoFactory.Create(testutils.WithRepoName("FormatTestRepo"))
 	author := userFactory.Create()
-	mr := mrFactory.Create(repo, author, testutils.WithMRState("opened"), testutils.WithLabels(db, "release", "release-ready"))
+	mr := mrFactory.Create(repo, author, testutils.WithTitle("Feature Release Test"), testutils.WithMRState("opened"), testutils.WithLabels(db, "release", "release-ready"))
 
 	newDesc := "- [Feature A](https://gitlab.com/g/p/-/merge_requests/100)"
 	db.Model(&mr).Update("description", newDesc)
@@ -739,6 +742,9 @@ func TestProcessReleaseMRDescriptionChanges_MessageFormat(t *testing.T) {
 	}
 	if !strings.Contains(msg, "FormatTestRepo") {
 		t.Error("Message should contain repo name")
+	}
+	if !strings.Contains(msg, "Feature Release Test") {
+		t.Error("Message should contain MR title")
 	}
 	if !strings.Contains(msg, "Feature A") {
 		t.Error("Message should contain the new entry text")

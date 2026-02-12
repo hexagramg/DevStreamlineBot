@@ -1,6 +1,7 @@
 package consumers
 
 import (
+	"crypto/rand"
 	"fmt"
 	"log"
 	"regexp"
@@ -1905,11 +1906,18 @@ func (c *VKCommandConsumer) handleSpawnBranchCommand(msg *botgolang.Message, _ b
 
 	argStr := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/spawn_branch"))
 	if argStr == "" {
-		c.sendReply(msg, "Usage: /spawn_branch <gitlab_id or project_path>")
+		c.sendReply(msg, "Usage: /spawn_branch <gitlab_id or project_path> [custom name]")
 		return
 	}
 
-	repo, err := utils.FindRepositoryByIdentifier(c.db, argStr)
+	parts := strings.SplitN(argStr, " ", 2)
+	repoIdentifier := parts[0]
+	var customName string
+	if len(parts) > 1 {
+		customName = strings.TrimSpace(parts[1])
+	}
+
+	repo, err := utils.FindRepositoryByIdentifier(c.db, repoIdentifier)
 	if err != nil {
 		c.sendReply(msg, err.Error())
 		return
@@ -1938,22 +1946,12 @@ func (c *VKCommandConsumer) handleSpawnBranchCommand(msg *botgolang.Message, _ b
 
 	devBranch := autoReleaseConfig.DevBranchName
 
-	// Get dev branch HEAD SHA
-	branch, _, err := c.glClient.Branches.GetBranch(repo.GitlabID, devBranch)
-	if err != nil {
-		c.sendReply(msg, fmt.Sprintf("Failed to get dev branch '%s': %v", devBranch, err))
-		return
-	}
+	salt := make([]byte, 3)
+	rand.Read(salt)
 
-	sha := branch.Commit.ID
-	shortSHA := sha
-	if len(sha) > 6 {
-		shortSHA = sha[:6]
-	}
-
-	branchName := fmt.Sprintf("feature_release_%s_%s",
+	branchName := fmt.Sprintf("feature_release_%s_%x",
 		time.Now().Format("2006-01-02"),
-		shortSHA,
+		salt,
 	)
 
 	// Create branch in GitLab
@@ -1967,7 +1965,10 @@ func (c *VKCommandConsumer) handleSpawnBranchCommand(msg *botgolang.Message, _ b
 	}
 
 	// Create MR: feature_release branch → dev branch
-	title := fmt.Sprintf("Feature Release %s", time.Now().Format("2006-01-02"))
+	title := customName
+	if title == "" {
+		title = fmt.Sprintf("Feature Release %s", time.Now().Format("2006-01-02"))
+	}
 	mrResult, _, err := c.glClient.MergeRequests.CreateMergeRequest(repo.GitlabID, &gitlab.CreateMergeRequestOptions{
 		SourceBranch:       gitlab.Ptr(branchName),
 		TargetBranch:       gitlab.Ptr(devBranch),

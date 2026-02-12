@@ -2,6 +2,7 @@ package consumers
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -349,11 +350,6 @@ func TestProcessAutoReleaseBranches_BranchNamingFormat(t *testing.T) {
 	testutils.CreateAutoReleaseBranchConfig(db, repo, "myprefix", "develop")
 
 	mockBranches := &mocks.MockBranchesService{
-		GetBranchFunc: func(pid interface{}, branch string, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
-			return &gitlab.Branch{
-				Commit: &gitlab.Commit{ID: "deadbeef1234567890"},
-			}, mocks.NewMockResponse(0), nil
-		},
 		CreateBranchFunc: func(pid interface{}, opt *gitlab.CreateBranchOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
 			return &gitlab.Branch{Name: *opt.Branch}, mocks.NewMockResponse(0), nil
 		},
@@ -378,10 +374,10 @@ func TestProcessAutoReleaseBranches_BranchNamingFormat(t *testing.T) {
 	branchName := *mockBranches.CreateBranchCalls[0].Opt.Branch
 	today := time.Now().Format("2006-01-02")
 
-	// Should be: myprefix_YYYY-MM-DD_deadbe
-	expectedPrefix := "myprefix_" + today + "_deadbe"
-	if branchName != expectedPrefix {
-		t.Errorf("expected branch name %s, got %s", expectedPrefix, branchName)
+	// Should be: myprefix_YYYY-MM-DD_{6 hex chars}
+	expectedPattern := regexp.MustCompile(`^myprefix_` + regexp.QuoteMeta(today) + `_[0-9a-f]{6}$`)
+	if !expectedPattern.MatchString(branchName) {
+		t.Errorf("branch name %q doesn't match expected pattern myprefix_%s_{6 hex chars}", branchName, today)
 	}
 }
 
@@ -540,11 +536,6 @@ func TestProcessAutoReleaseBranches_CreateBranchError(t *testing.T) {
 	testutils.CreateAutoReleaseBranchConfig(db, repo, "release", "develop")
 
 	mockBranches := &mocks.MockBranchesService{
-		GetBranchFunc: func(pid interface{}, branch string, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
-			return &gitlab.Branch{
-				Commit: &gitlab.Commit{ID: "abc123"},
-			}, mocks.NewMockResponse(0), nil
-		},
 		CreateBranchFunc: func(pid interface{}, opt *gitlab.CreateBranchOptions, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
 			return nil, mocks.NewMockResponse(0), errors.New("branch creation failed")
 		},
@@ -873,45 +864,6 @@ func TestExtractIncludedMRs_ParsesMergeCommits(t *testing.T) {
 	// Verify second MR
 	if result[1].IID != 456 {
 		t.Errorf("expected second MR IID 456, got %d", result[1].IID)
-	}
-}
-
-func TestProcessAutoReleaseBranches_GetBranchError(t *testing.T) {
-	db := testutils.SetupTestDB(t)
-	repoFactory := testutils.NewRepositoryFactory(db)
-
-	repo := repoFactory.Create(testutils.WithRepoGitlabID(123))
-	testutils.CreateReleaseLabel(db, repo, "release")
-	testutils.CreateAutoReleaseBranchConfig(db, repo, "release", "develop")
-
-	mockBranches := &mocks.MockBranchesService{
-		GetBranchFunc: func(pid interface{}, branch string, opts ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
-			return nil, mocks.NewMockResponse404(), errors.New("branch not found")
-		},
-	}
-
-	mockMRs := &mocks.MockMergeRequestsService{
-		ListProjectMergeRequestsFunc: func(pid interface{}, opt *gitlab.ListProjectMergeRequestsOptions, opts ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
-			return []*gitlab.BasicMergeRequest{}, mocks.NewMockResponse(0), nil
-		},
-	}
-
-	consumer := NewAutoReleaseConsumerWithServices(db, mockMRs, mockBranches, "")
-
-	// Should not panic
-	consumer.ProcessAutoReleaseBranches()
-
-	// Should try to get dev branch
-	if len(mockBranches.GetBranchCalls) != 1 {
-		t.Errorf("expected 1 GetBranch call, got %d", len(mockBranches.GetBranchCalls))
-	}
-
-	// Should not try to create branch or MR after GetBranch error
-	if len(mockBranches.CreateBranchCalls) != 0 {
-		t.Errorf("expected no CreateBranch calls after GetBranch error, got %d", len(mockBranches.CreateBranchCalls))
-	}
-	if len(mockMRs.CreateMergeRequestCalls) != 0 {
-		t.Errorf("expected no CreateMergeRequest calls after GetBranch error, got %d", len(mockMRs.CreateMergeRequestCalls))
 	}
 }
 
