@@ -252,7 +252,7 @@ func (c *ReleaseNotificationConsumer) notifyDescriptionChanges(releaseMR models.
 	if len(newEntries) > 1 {
 		header = "Добавлены задачи в релиз"
 	}
-	message := fmt.Sprintf("%s %s (%s)\n%s", header, html.EscapeString(repo.Name), html.EscapeString(releaseMR.Title), strings.Join(newEntries, "\n"))
+	message := fmt.Sprintf("%s %s (%s)\n%s", header, html.EscapeString(repo.Name), html.EscapeString(releaseMR.Title), convertToVKHTML(strings.Join(newEntries, "\n")))
 
 	for _, sub := range subs {
 		if err := c.sendHTMLWithFallback(sub.Chat.ChatID, message); err != nil {

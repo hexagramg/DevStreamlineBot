@@ -749,6 +749,12 @@ func TestProcessReleaseMRDescriptionChanges_MessageFormat(t *testing.T) {
 	if !strings.Contains(msg, "Feature A") {
 		t.Error("Message should contain the new entry text")
 	}
+	if !strings.Contains(msg, `<a href="https://gitlab.com/g/p/-/merge_requests/100">Feature A</a>`) {
+		t.Errorf("Message should contain HTML link, got: %s", msg)
+	}
+	if strings.Contains(msg, "[Feature A](") {
+		t.Error("Message should not contain markdown links")
+	}
 }
 
 func TestProcessReleaseMRDescriptionChanges_MultipleRepos(t *testing.T) {
