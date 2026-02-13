@@ -725,7 +725,7 @@ func (c *MRReviewerConsumer) ProcessFullyApprovedNotifications() {
 }
 
 func (c *MRReviewerConsumer) ProcessStateChangeNotifications() {
-	recentCutoff := time.Now().Add(-30 * time.Minute)
+	recentCutoff := time.Now().UTC().Add(-30 * time.Minute)
 
 	var actions []models.MRAction
 	err := c.db.
@@ -826,7 +826,7 @@ func (c *MRReviewerConsumer) markActionNotified(actionID uint) {
 // CleanupOldUnnotifiedActions marks old unprocessed actions as notified to prevent
 // them from being processed and potentially causing spam notifications.
 func (c *MRReviewerConsumer) CleanupOldUnnotifiedActions() {
-	oldCutoff := time.Now().Add(-1 * time.Hour)
+	oldCutoff := time.Now().UTC().Add(-1 * time.Hour)
 	result := c.db.Model(&models.MRAction{}).
 		Where("notified = ? AND timestamp < ?", false, oldCutoff).
 		Update("notified", true)

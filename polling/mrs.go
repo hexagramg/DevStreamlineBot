@@ -83,7 +83,7 @@ func detectBlockLabelChanges(db *gorm.DB, mrID uint, repoID uint, oldLabels, new
 		newSet[l] = true
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 
 	for label := range newSet {
 		if blockLabelSet[label] && !oldSet[label] {
@@ -121,7 +121,7 @@ func detectReleaseReadyLabelChanges(db *gorm.DB, mrID uint, repoID uint, oldLabe
 		newSet[l] = true
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 
 	for label := range newSet {
 		if releaseReadyLabelSet[label] && !oldSet[label] {
@@ -160,7 +160,7 @@ func extractJiraTaskID(jiraPattern *regexp.Regexp, branch, title string) string 
 }
 
 func detectAndRecordStateChanges(db *gorm.DB, existingMR *models.MergeRequest, newMR *gitlab.BasicMergeRequest, localMRID uint) {
-	now := time.Now()
+	now := time.Now().UTC()
 
 	if existingMR != nil && existingMR.Draft != newMR.Draft {
 		recordMRAction(db, localMRID, models.ActionDraftToggled, nil, nil, nil, now, fmt.Sprintf(`{"draft":%t}`, newMR.Draft))
@@ -353,7 +353,7 @@ func checkAndRecordFullyApproved(db *gorm.DB, mrID uint, reviewers []models.User
 		return
 	}
 
-	recordMRAction(db, mrID, models.ActionFullyApproved, nil, nil, nil, time.Now(), "")
+	recordMRAction(db, mrID, models.ActionFullyApproved, nil, nil, nil, time.Now().UTC(), "")
 	log.Printf("MR %d is now fully approved", mrID)
 }
 
@@ -397,7 +397,7 @@ func syncMRApprovals(db *gorm.DB, client *gitlab.Client, projectID int, mrIID in
 		approverUsers = append(approverUsers, u)
 
 		if !existingApproverIDs[ap.User.ID] {
-			timestamp := time.Now()
+			timestamp := time.Now().UTC()
 			// Note: GitLab API doesn't provide ApprovedAt in approvals.ApprovedBy
 			// Using current time as fallback
 			recordMRAction(db, localMRID, models.ActionApproved, &u.ID, nil, nil, timestamp, "")
@@ -413,7 +413,7 @@ func syncMRApprovals(db *gorm.DB, client *gitlab.Client, projectID int, mrIID in
 			}
 		}
 		if !found {
-			recordMRAction(db, localMRID, models.ActionUnapproved, &existing.ID, nil, nil, time.Now(), "")
+			recordMRAction(db, localMRID, models.ActionUnapproved, &existing.ID, nil, nil, time.Now().UTC(), "")
 		}
 	}
 
@@ -423,7 +423,7 @@ func syncMRApprovals(db *gorm.DB, client *gitlab.Client, projectID int, mrIID in
 func syncGitLabMRToDB(db *gorm.DB, client *gitlab.Client, mr *gitlab.BasicMergeRequest, localRepositoryID uint, gitlabProjectID int, jiraPattern *regexp.Regexp) (uint, error) {
 	var mrModelID uint
 	var reviewersToAssociate []models.User
-	now := time.Now()
+	now := time.Now().UTC()
 
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var author models.User

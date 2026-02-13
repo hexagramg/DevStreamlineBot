@@ -1646,7 +1646,7 @@ func TestOldActions_NotProcessed(t *testing.T) {
 	comment := testutils.CreateMRComment(db, mr, reviewer, 123, testutils.WithResolvable())
 
 	// Create action with old timestamp (1 hour ago)
-	oldTimestamp := time.Now().Add(-1 * time.Hour)
+	oldTimestamp := time.Now().UTC().Add(-1 * time.Hour)
 	action := testutils.CreateMRAction(db, mr, models.ActionCommentAdded,
 		testutils.WithActor(reviewer),
 		testutils.WithCommentID(comment.ID),
@@ -1686,13 +1686,13 @@ func TestCleanupOldUnnotifiedActions(t *testing.T) {
 	// Create old action (2 hours ago)
 	oldAction := testutils.CreateMRAction(db, mr, models.ActionCommentAdded,
 		testutils.WithActor(reviewer),
-		testutils.WithTimestamp(time.Now().Add(-2*time.Hour)),
+		testutils.WithTimestamp(time.Now().UTC().Add(-2*time.Hour)),
 	)
 
 	// Create recent action (10 minutes ago)
 	recentAction := testutils.CreateMRAction(db, mr, models.ActionCommentAdded,
 		testutils.WithActor(reviewer),
-		testutils.WithTimestamp(time.Now().Add(-10*time.Minute)),
+		testutils.WithTimestamp(time.Now().UTC().Add(-10*time.Minute)),
 	)
 
 	consumer := NewMRReviewerConsumer(db, nil, nil, 0, nil)

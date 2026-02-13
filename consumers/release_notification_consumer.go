@@ -421,6 +421,7 @@ func (c *ReleaseNotificationConsumer) processReleaseMergedAction(action models.M
 	}
 
 	if !hasReleaseLabel {
+		log.Printf("release merged notification skipped for MR %d: no release label found among %d labels", mr.ID, len(mr.Labels))
 		c.markActionNotified(action.ID)
 		return
 	}
@@ -435,6 +436,7 @@ func (c *ReleaseNotificationConsumer) processReleaseMergedAction(action models.M
 	}
 
 	if len(subs) == 0 {
+		log.Printf("release merged notification skipped for MR %d: no release subscriptions for repo %d", mr.ID, mr.RepositoryID)
 		c.markActionNotified(action.ID)
 		return
 	}
