@@ -879,6 +879,280 @@ func TestMarkActionNotified_NonExistentID(t *testing.T) {
 	consumer.markActionNotified(99999)
 }
 
+// ============================================================================
+// ProcessReleaseMergedNotifications Tests
+// ============================================================================
+
+func TestProcessReleaseMergedNotifications_NoUnnotifiedActions(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+
+	consumer := NewReleaseNotificationConsumerWithBot(db, mockBot)
+	consumer.ProcessReleaseMergedNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages, got %d", len(sentMessages))
+	}
+}
+
+func TestProcessReleaseMergedNotifications_MRWithoutReleaseLabel(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+	chatFactory := testutils.NewChatFactory(db)
+	vkUserFactory := testutils.NewVKUserFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	mr := mrFactory.Create(repo, author, testutils.WithMRState("merged"))
+
+	testutils.CreateReleaseLabel(db, repo, "release")
+	testutils.CreateReleaseSubscription(db, repo, chatFactory.Create(), vkUserFactory.Create())
+
+	action := testutils.CreateMRAction(db, mr, models.ActionMerged)
+
+	consumer := NewReleaseNotificationConsumerWithBot(db, mockBot)
+	consumer.ProcessReleaseMergedNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages (MR lacks release label), got %d", len(sentMessages))
+	}
+
+	var updatedAction models.MRAction
+	db.First(&updatedAction, action.ID)
+	if !updatedAction.Notified {
+		t.Error("Action should be marked as notified")
+	}
+}
+
+func TestProcessReleaseMergedNotifications_NoSubscriptions(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	mr := mrFactory.Create(repo, author, testutils.WithMRState("merged"), testutils.WithLabels(db, "release"))
+
+	testutils.CreateReleaseLabel(db, repo, "release")
+
+	action := testutils.CreateMRAction(db, mr, models.ActionMerged)
+
+	consumer := NewReleaseNotificationConsumerWithBot(db, mockBot)
+	consumer.ProcessReleaseMergedNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages (no subscriptions), got %d", len(sentMessages))
+	}
+
+	var updatedAction models.MRAction
+	db.First(&updatedAction, action.ID)
+	if !updatedAction.Notified {
+		t.Error("Action should be marked as notified")
+	}
+}
+
+func TestProcessReleaseMergedNotifications_HappyPath(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+	chatFactory := testutils.NewChatFactory(db)
+	vkUserFactory := testutils.NewVKUserFactory(db)
+
+	repo := repoFactory.Create(testutils.WithRepoName("MyProject"))
+	author := userFactory.Create()
+	mr := mrFactory.Create(repo, author,
+		testutils.WithTitle("Release 2026-02-13"),
+		testutils.WithMRState("merged"),
+		testutils.WithLabels(db, "release"))
+
+	testutils.CreateReleaseLabel(db, repo, "release")
+
+	chat := chatFactory.Create()
+	vkUser := vkUserFactory.Create()
+	testutils.CreateReleaseSubscription(db, repo, chat, vkUser)
+
+	action := testutils.CreateMRAction(db, mr, models.ActionMerged)
+
+	consumer := NewReleaseNotificationConsumerWithBot(db, mockBot)
+	consumer.ProcessReleaseMergedNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(sentMessages))
+	}
+
+	msg := sentMessages[0].Text
+	if !strings.Contains(msg, "Релиз ушел на золото") {
+		t.Error("Message should contain 'Релиз ушел на золото'")
+	}
+	if !strings.Contains(msg, "Release 2026-02-13") {
+		t.Error("Message should contain MR title")
+	}
+	if !strings.Contains(msg, mr.WebURL) {
+		t.Error("Message should contain MR web URL")
+	}
+
+	var updatedAction models.MRAction
+	db.First(&updatedAction, action.ID)
+	if !updatedAction.Notified {
+		t.Error("Action should be marked as notified")
+	}
+}
+
+func TestProcessReleaseMergedNotifications_FeatureReleaseLabel(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+	chatFactory := testutils.NewChatFactory(db)
+	vkUserFactory := testutils.NewVKUserFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	mr := mrFactory.Create(repo, author,
+		testutils.WithTitle("Feature Release XYZ"),
+		testutils.WithMRState("merged"),
+		testutils.WithLabels(db, "feature-release"))
+
+	testutils.CreateFeatureReleaseLabel(db, repo, "feature-release")
+	testutils.CreateReleaseSubscription(db, repo, chatFactory.Create(), vkUserFactory.Create())
+
+	action := testutils.CreateMRAction(db, mr, models.ActionMerged)
+
+	consumer := NewReleaseNotificationConsumerWithBot(db, mockBot)
+	consumer.ProcessReleaseMergedNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 1 {
+		t.Fatalf("Expected 1 message for feature release, got %d", len(sentMessages))
+	}
+
+	if !strings.Contains(sentMessages[0].Text, "Feature Release XYZ") {
+		t.Error("Message should contain feature release title")
+	}
+
+	var updatedAction models.MRAction
+	db.First(&updatedAction, action.ID)
+	if !updatedAction.Notified {
+		t.Error("Action should be marked as notified")
+	}
+}
+
+func TestProcessReleaseMergedNotifications_MultipleSubscriptions(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+	chatFactory := testutils.NewChatFactory(db)
+	vkUserFactory := testutils.NewVKUserFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	mr := mrFactory.Create(repo, author, testutils.WithMRState("merged"), testutils.WithLabels(db, "release"))
+
+	testutils.CreateReleaseLabel(db, repo, "release")
+
+	testutils.CreateReleaseSubscription(db, repo, chatFactory.Create(), vkUserFactory.Create())
+	testutils.CreateReleaseSubscription(db, repo, chatFactory.Create(), vkUserFactory.Create())
+	testutils.CreateReleaseSubscription(db, repo, chatFactory.Create(), vkUserFactory.Create())
+
+	testutils.CreateMRAction(db, mr, models.ActionMerged)
+
+	consumer := NewReleaseNotificationConsumerWithBot(db, mockBot)
+	consumer.ProcessReleaseMergedNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 3 {
+		t.Errorf("Expected 3 messages (one per subscription), got %d", len(sentMessages))
+	}
+}
+
+func TestProcessReleaseMergedNotifications_AlreadyNotified(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+	chatFactory := testutils.NewChatFactory(db)
+	vkUserFactory := testutils.NewVKUserFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	mr := mrFactory.Create(repo, author, testutils.WithMRState("merged"), testutils.WithLabels(db, "release"))
+
+	testutils.CreateReleaseLabel(db, repo, "release")
+	testutils.CreateReleaseSubscription(db, repo, chatFactory.Create(), vkUserFactory.Create())
+
+	action := testutils.CreateMRAction(db, mr, models.ActionMerged)
+	db.Model(&action).Update("notified", true)
+
+	consumer := NewReleaseNotificationConsumerWithBot(db, mockBot)
+	consumer.ProcessReleaseMergedNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 0 {
+		t.Errorf("Expected no messages (already notified), got %d", len(sentMessages))
+	}
+}
+
+func TestProcessReleaseMergedNotifications_MessageFormat(t *testing.T) {
+	db := testutils.SetupTestDB(t)
+	mockBot := mocks.NewMockVKBot()
+
+	repoFactory := testutils.NewRepositoryFactory(db)
+	userFactory := testutils.NewUserFactory(db)
+	mrFactory := testutils.NewMergeRequestFactory(db)
+	chatFactory := testutils.NewChatFactory(db)
+	vkUserFactory := testutils.NewVKUserFactory(db)
+
+	repo := repoFactory.Create()
+	author := userFactory.Create()
+	mr := mrFactory.Create(repo, author,
+		testutils.WithTitle("Release v1.2.3"),
+		testutils.WithMRState("merged"),
+		testutils.WithLabels(db, "release"))
+	db.Model(&mr).Update("web_url", "https://gitlab.example.com/repo/-/merge_requests/42")
+
+	testutils.CreateReleaseLabel(db, repo, "release")
+	testutils.CreateReleaseSubscription(db, repo, chatFactory.Create(), vkUserFactory.Create())
+
+	testutils.CreateMRAction(db, mr, models.ActionMerged)
+
+	consumer := NewReleaseNotificationConsumerWithBot(db, mockBot)
+	consumer.ProcessReleaseMergedNotifications()
+
+	sentMessages := mockBot.GetSentMessages()
+	if len(sentMessages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(sentMessages))
+	}
+
+	msg := sentMessages[0].Text
+	if !strings.Contains(msg, `Релиз ушел на золото Release v1.2.3: `) {
+		t.Errorf("Message should start with title, got: %s", msg)
+	}
+	if !strings.Contains(msg, `<a href="https://gitlab.example.com/repo/-/merge_requests/42">Release v1.2.3</a>`) {
+		t.Errorf("Message should contain HTML link with title, got: %s", msg)
+	}
+}
+
 func TestConvertToVKHTML(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -168,6 +168,7 @@ func main() {
 			autoReleaseConsumer.ProcessFeatureReleaseMRDescriptions()
 			releaseNotificationConsumer.ProcessNewReleaseNotifications()
 			releaseNotificationConsumer.ProcessReleaseMRDescriptionChanges()
+			releaseNotificationConsumer.ProcessReleaseMergedNotifications()
 			deployTrackingConsumer.PollDeployJobs()
 		}
 	}()

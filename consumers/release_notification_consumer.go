@@ -376,6 +376,82 @@ func (c *ReleaseNotificationConsumer) sendHTMLWithFallback(chatID, text string) 
 	return nil
 }
 
+// ProcessReleaseMergedNotifications sends notifications when a release MR is merged.
+func (c *ReleaseNotificationConsumer) ProcessReleaseMergedNotifications() {
+	var actions []models.MRAction
+	if err := c.db.
+		Where("action_type = ? AND notified = ?", models.ActionMerged, false).
+		Preload("MergeRequest").
+		Preload("MergeRequest.Repository").
+		Preload("MergeRequest.Labels").
+		Find(&actions).Error; err != nil {
+		log.Printf("failed to fetch unnotified merged actions: %v", err)
+		return
+	}
+
+	for _, action := range actions {
+		c.processReleaseMergedAction(action)
+	}
+}
+
+func (c *ReleaseNotificationConsumer) processReleaseMergedAction(action models.MRAction) {
+	mr := action.MergeRequest
+	repo := mr.Repository
+
+	releaseLabelNames := make(map[string]bool)
+
+	var releaseLabels []models.ReleaseLabel
+	c.db.Where("repository_id = ?", mr.RepositoryID).Find(&releaseLabels)
+	for _, rl := range releaseLabels {
+		releaseLabelNames[rl.LabelName] = true
+	}
+
+	var featureReleaseLabels []models.FeatureReleaseLabel
+	c.db.Where("repository_id = ?", mr.RepositoryID).Find(&featureReleaseLabels)
+	for _, frl := range featureReleaseLabels {
+		releaseLabelNames[frl.LabelName] = true
+	}
+
+	hasReleaseLabel := false
+	for _, label := range mr.Labels {
+		if releaseLabelNames[label.Name] {
+			hasReleaseLabel = true
+			break
+		}
+	}
+
+	if !hasReleaseLabel {
+		c.markActionNotified(action.ID)
+		return
+	}
+
+	var subs []models.ReleaseSubscription
+	if err := c.db.
+		Where("repository_id = ?", mr.RepositoryID).
+		Preload("Chat").
+		Find(&subs).Error; err != nil {
+		log.Printf("failed to fetch release subscriptions for repo %d: %v", mr.RepositoryID, err)
+		return
+	}
+
+	if len(subs) == 0 {
+		c.markActionNotified(action.ID)
+		return
+	}
+
+	message := fmt.Sprintf("Релиз ушел на золото %s: <a href=\"%s\">%s</a>",
+		html.EscapeString(mr.Title), mr.WebURL, html.EscapeString(mr.Title))
+
+	for _, sub := range subs {
+		if err := c.sendHTMLWithFallback(sub.Chat.ChatID, message); err != nil {
+			log.Printf("failed to send release merged notification to chat %s: %v", sub.Chat.ChatID, err)
+		}
+	}
+
+	c.markActionNotified(action.ID)
+	log.Printf("Sent release merged notification for MR %d (%s) to %d chats", mr.ID, repo.Name, len(subs))
+}
+
 func (c *ReleaseNotificationConsumer) markActionNotified(actionID uint) {
 	if err := c.db.Model(&models.MRAction{}).
 		Where("id = ?", actionID).

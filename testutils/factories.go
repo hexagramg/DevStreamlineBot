@@ -449,6 +449,15 @@ func CreateReleaseLabel(db *gorm.DB, repo models.Repository, labelName string) m
 	return rl
 }
 
+func CreateFeatureReleaseLabel(db *gorm.DB, repo models.Repository, labelName string) models.FeatureReleaseLabel {
+	frl := models.FeatureReleaseLabel{
+		RepositoryID: repo.ID,
+		LabelName:    labelName,
+	}
+	db.Create(&frl)
+	return frl
+}
+
 func CreateReleaseManager(db *gorm.DB, repo models.Repository, user models.User) models.ReleaseManager {
 	rm := models.ReleaseManager{
 		RepositoryID: repo.ID,
